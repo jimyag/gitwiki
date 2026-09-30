@@ -6,3 +6,5 @@ web/node_modules
 web/bun.lockb
 *.log
 .DS_Store
+
+internal/web/dist
