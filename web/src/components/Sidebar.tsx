@@ -189,9 +189,19 @@ function TreeNode({ node, depth, currentId, onOpen, parentId, siblings, index }:
     setRenaming(false);
   };
 
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  useEffect(() => {
+    if (!confirmDelete) return;
+    const t = setTimeout(() => setConfirmDelete(false), 2500);
+    return () => clearTimeout(t);
+  }, [confirmDelete]);
+
   const onDelete = async () => {
     if (!currentRepo) return;
-    if (!confirm(`删除页面 "${node.title}"?`)) return;
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      return;
+    }
     try {
       await api.deletePage(currentRepo, node.id);
       const tree = await api.pageTree(currentRepo);
@@ -200,6 +210,7 @@ function TreeNode({ node, depth, currentId, onOpen, parentId, siblings, index }:
       toast.success("已删除");
     } catch (e: any) {
       toast.error(`删除失败: ${e.message}`);
+      setConfirmDelete(false);
     }
   };
 
@@ -256,7 +267,16 @@ function TreeNode({ node, depth, currentId, onOpen, parentId, siblings, index }:
             <Pencil className="size-3" />
           </button>
           {node.is_dir && <NewPageButton parentId={node.id} />}
-          <button title="删除" className="p-1 rounded hover:bg-red-50 text-red-500 hover:text-red-700" onClick={onDelete}>
+          <button
+            title={confirmDelete ? "再点一次确认删除" : "删除"}
+            className={
+              "p-1 rounded transition " +
+              (confirmDelete
+                ? "bg-red-500 text-white"
+                : "hover:bg-red-50 text-red-500 hover:text-red-700")
+            }
+            onClick={onDelete}
+          >
             <Trash2 className="size-3" />
           </button>
         </span>
@@ -272,6 +292,7 @@ function NewPageButton({ parentId }: { parentId: string }) {
   const currentRepo = useStore(s => s.currentRepo);
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     if (!open) setTitle("");
@@ -280,7 +301,8 @@ function NewPageButton({ parentId }: { parentId: string }) {
   const canCreate = !!title.trim();
 
   const doCreate = async () => {
-    if (!currentRepo || !canCreate) return;
+    if (!currentRepo || !canCreate || submitting) return;
+    setSubmitting(true);
     try {
       const res = await api.createPage(currentRepo, { parent_id: parentId, title: title.trim() });
       const tree = await api.pageTree(currentRepo);
@@ -292,6 +314,8 @@ function NewPageButton({ parentId }: { parentId: string }) {
       useStore.getState().openPage(pc.id, pc.base_sha, pc.is_bundle);
     } catch (e: any) {
       toast.error(`创建失败: ${e.message}`);
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -328,9 +352,9 @@ function NewPageButton({ parentId }: { parentId: string }) {
               <button
                 id="np-create"
                 className="px-3 py-1.5 rounded-md bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
-                disabled={!canCreate}
+                disabled={!canCreate || submitting}
                 onClick={doCreate}
-              >创建</button>
+              >{submitting ? "创建中…" : "创建"}</button>
             </div>
           </div>
         </div>

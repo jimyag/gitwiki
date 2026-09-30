@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jimyag/gitwiki/internal/auth"
 	"github.com/jimyag/gitwiki/internal/config"
@@ -27,6 +28,16 @@ var (
 type Repo struct {
 	cfg config.Repo
 	mu  sync.Mutex // serializes pull/commit/push per repo
+
+	// lastRecentCreate dedups rapid duplicate create requests (e.g. user double-clicks
+	// "create" while a network roundtrip is outstanding). Keyed by parentID+title.
+	recentCreateMu sync.Mutex
+	recentCreate   map[string]recentCreate
+}
+
+type recentCreate struct {
+	id string
+	at time.Time
 }
 
 type Manager struct {

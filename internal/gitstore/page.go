@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jimyag/gitwiki/internal/auth"
 )
@@ -119,27 +120,29 @@ func (r *Repo) PageTree(ctx context.Context) (*Page, error) {
 				}
 				continue
 			}
-			// dir (or non-md file we ignore): descend / create stub dir page
-			if de.IsDir() {
-				id := strings.Join(parts[:i+1], "/")
-				var next *Page
-				// If leaf page with same ID exists, need bundle form (but Hugo disallows both); skip
-				for _, c := range cur.Children {
-					if c.ID == id && c.IsDir {
-						next = c
-						break
-					}
-				}
-				if next == nil {
-					next = &Page{ID: id, Title: p, IsDir: true}
-					// _index.md inside makes HasBody true
-					if _, err := os.Stat(filepath.Join(path, "_index.md")); err == nil {
-						next.HasBody = true
-					}
-					cur.Children = append(cur.Children, next)
-				}
-				cur = next
+			// Non-final segments are always directories we need to descend into.
+			// Final segment here is also a directory (not a .md file).
+			isDirSegment := !last || de.IsDir()
+			if !isDirSegment {
+				continue
 			}
+			id := strings.Join(parts[:i+1], "/")
+			var next *Page
+			for _, c := range cur.Children {
+				if c.ID == id && c.IsDir {
+					next = c
+					break
+				}
+			}
+			if next == nil {
+				next = &Page{ID: id, Title: p, IsDir: true}
+				absDir := filepath.Join(contentRoot, filepath.FromSlash(id))
+				if _, err := os.Stat(filepath.Join(absDir, "_index.md")); err == nil {
+					next.HasBody = true
+				}
+				cur.Children = append(cur.Children, next)
+			}
+			cur = next
 		}
 		return nil
 	})
@@ -324,11 +327,22 @@ func (r *Repo) SavePage(ctx context.Context, id string, doc *PageDoc, baseSHA, m
 }
 
 // CreatePage creates an empty page with front matter. If parentID != "", page is nested.
-// Slug is generated server-side; users only see and edit titles.
+// Slug is generated server-side; users only see and edit titles. Rapid duplicate calls
+// with the same (parentID, title) within 30s return the prior id — guards double-clicks.
 func (r *Repo) CreatePage(ctx context.Context, parentID, title string, u *auth.User) (string, error) {
 	if title == "" {
 		return "", ErrBadPath
 	}
+	dedupKey := parentID + "|" + title
+	r.recentCreateMu.Lock()
+	if r.recentCreate == nil {
+		r.recentCreate = map[string]recentCreate{}
+	}
+	if rc, ok := r.recentCreate[dedupKey]; ok && time.Since(rc.at) < 30*time.Second {
+		r.recentCreateMu.Unlock()
+		return rc.id, nil
+	}
+	r.recentCreateMu.Unlock()
 	// Generate a random slug, retry on collision (astronomically rare).
 	var id string
 	for i := 0; i < 5; i++ {
@@ -352,6 +366,9 @@ func (r *Repo) CreatePage(ctx context.Context, parentID, title string, u *auth.U
 	if _, err := r.SavePage(ctx, id, doc, "", "wiki: new page "+title, u); err != nil {
 		return "", err
 	}
+	r.recentCreateMu.Lock()
+	r.recentCreate[dedupKey] = recentCreate{id: id, at: time.Now()}
+	r.recentCreateMu.Unlock()
 	return id, nil
 }
 
@@ -540,12 +557,10 @@ func (r *Repo) DeletePage(ctx context.Context, id string, u *auth.User, message 
 			return fmt.Errorf("bundle page %q still has children or assets; delete them first", id)
 		}
 	}
-	if err := os.Remove(abs); err != nil {
-		return err
-	}
 	gitPath := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, relToMd(id, isBundle)))
-	r.git(ctx, "rm", "-q", "--", gitPath) // may already be staged by os.Remove
-	if err := r.git(ctx, "add", "-u", "--", gitPath); err != nil {
+	// Use `git rm` to both delete the file and stage the deletion.
+	// --ignore-unmatch makes repeats idempotent if a previous run already staged it.
+	if err := r.git(ctx, "rm", "-q", "--ignore-unmatch", "--", gitPath); err != nil {
 		return err
 	}
 	if message == "" {
