@@ -13,8 +13,20 @@ export interface RemoteCursor {
   at: number; // ms epoch, for staleness pruning
 }
 
+export interface UploadTask {
+  id: string;
+  filename: string;
+  pct: number; // 0-100
+  status: "uploading" | "done" | "error";
+  error?: string;
+}
+
 interface State {
   user: User | null;
+  uploads: UploadTask[];
+  addUpload(u: UploadTask): void;
+  updateUpload(id: string, patch: Partial<UploadTask>): void;
+  removeUpload(id: string): void;
   repos: Repo[];
   currentRepo: string | null;
   tree: PageMeta | null;
@@ -46,6 +58,12 @@ interface State {
 
 export const useStore = create<State>((set) => ({
   user: null,
+  uploads: [],
+  addUpload: (u) => set(s => ({ uploads: [...s.uploads, u] })),
+  updateUpload: (id, patch) => set(s => ({
+    uploads: s.uploads.map(u => u.id === id ? { ...u, ...patch } : u),
+  })),
+  removeUpload: (id) => set(s => ({ uploads: s.uploads.filter(u => u.id !== id) })),
   repos: [],
   currentRepo: null,
   tree: null,

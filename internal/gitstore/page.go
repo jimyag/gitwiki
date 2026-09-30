@@ -346,7 +346,7 @@ func (r *Repo) CreatePage(ctx context.Context, parentID, title string, u *auth.U
 	// Generate a random slug, retry on collision (astronomically rare).
 	var id string
 	for i := 0; i < 5; i++ {
-		slug := randomSlug(8)
+		slug := randomSlug(12)
 		candidate := slug
 		if parentID != "" {
 			candidate = parentID + "/" + slug
@@ -490,7 +490,7 @@ func (r *Repo) SaveAsset(ctx context.Context, id string, filename string, body i
 	if err != nil {
 		return "", err
 	}
-	shortHash := hex.EncodeToString(h.Sum(nil))[:8]
+	shortHash := hex.EncodeToString(h.Sum(nil))[:12]
 	safeBase := sanitizeFilename(base)
 	finalName := safeBase + "-" + shortHash + ext
 

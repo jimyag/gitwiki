@@ -65,12 +65,28 @@ export const api = {
     req<string[]>(`/api/repos/${slug}/assets?page_id=${encodeURIComponent(pageId)}`),
   assetUrl: (slug: string, pageId: string, name: string) =>
     `/api/repos/${slug}/asset?page_id=${encodeURIComponent(pageId)}&name=${encodeURIComponent(name)}`,
-  uploadAsset: async (slug: string, pageId: string, file: File): Promise<AssetUpload> => {
-    const fd = new FormData();
-    fd.append("page_id", pageId);
-    fd.append("file", file, file.name);
-    const r = await fetch(`/api/repos/${slug}/assets`, { method: "POST", body: fd });
-    if (!r.ok) throw new Error(await r.text());
-    return r.json();
-  },
+  // uploadAsset with progress. fetch() can't observe upload progress; use XHR.
+  uploadAsset: (slug: string, pageId: string, file: File, onProgress?: (pct: number) => void): Promise<AssetUpload> =>
+    new Promise((resolve, reject) => {
+      const fd = new FormData();
+      fd.append("page_id", pageId);
+      fd.append("file", file, file.name);
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `/api/repos/${slug}/assets`);
+      if (onProgress) {
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+        };
+      }
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try { resolve(JSON.parse(xhr.responseText)); }
+          catch { reject(new Error("bad json from server")); }
+        } else {
+          reject(new Error(xhr.responseText || `http ${xhr.status}`));
+        }
+      };
+      xhr.onerror = () => reject(new Error("network error"));
+      xhr.send(fd);
+    }),
 };

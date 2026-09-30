@@ -6,6 +6,7 @@ import { Editor } from "./components/Editor";
 import { TopBar } from "./components/TopBar";
 import { Toaster } from "sonner";
 import { SearchModal } from "./components/SearchModal";
+import { UploadBar } from "./components/UploadBar";
 
 export function App() {
   const setUser = useStore(s => s.setUser);
@@ -53,6 +54,7 @@ export function App() {
       </div>
       <Toaster richColors position="top-right" />
       <SearchHost />
+      <UploadBar />
     </div>
   );
 }

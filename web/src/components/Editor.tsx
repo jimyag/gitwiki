@@ -102,13 +102,19 @@ export function Editor() {
             event.preventDefault();
             if (!currentRepo || !pageId) return true;
             (async () => {
+              const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+              useStore.getState().addUpload({ id, filename: file.name, pct: 0, status: "uploading" });
               try {
-                const res = await api.uploadAsset(currentRepo, pageId, file);
+                const res = await api.uploadAsset(currentRepo, pageId, file, (pct) => {
+                  useStore.getState().updateUpload(id, { pct });
+                });
+                useStore.getState().updateUpload(id, { pct: 100, status: "done" });
+                setTimeout(() => useStore.getState().removeUpload(id), 2500);
                 const ref = `![](${res.path})`;
                 const pos = view.state.selection.main.head;
                 view.dispatch({ changes: { from: pos, insert: ref } });
-                toast.success(`已上传 ${file.name}`);
               } catch (e: any) {
+                useStore.getState().updateUpload(id, { status: "error", error: e.message });
                 toast.error(`上传失败: ${e.message}`);
               }
             })();
