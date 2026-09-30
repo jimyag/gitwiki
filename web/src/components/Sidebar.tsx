@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useStore } from "../store";
 import { api, type PageMeta } from "../lib/api";
 import { FileText, Folder, FolderOpen, Plus, ChevronRight, ChevronDown, ChevronUp, ChevronDown as ChevronDownIcon, Trash2, Pencil, BookOpen, LogOut } from "lucide-react";
@@ -45,8 +45,39 @@ export function Sidebar() {
   const user = useStore(s => s.user);
   const peers = useStore(s => s.peers);
 
+  const [width, setWidth] = useState(() => {
+    const saved = localStorage.getItem("gitwiki.sidebarWidth");
+    return saved ? Math.max(180, Math.min(480, parseInt(saved, 10) || 256)) : 256;
+  });
+  const dragging = useRef(false);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!dragging.current) return;
+      const next = Math.max(180, Math.min(480, e.clientX));
+      setWidth(next);
+    };
+    const onUp = () => {
+      if (dragging.current) {
+        dragging.current = false;
+        localStorage.setItem("gitwiki.sidebarWidth", String(width));
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      }
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [width]);
+
   return (
-    <aside className="w-64 flex flex-col shrink-0 bg-stone-100/70 text-stone-700 border-r border-stone-200/60">
+    <aside
+      style={{ width }}
+      className="flex flex-col shrink-0 bg-stone-100/70 text-stone-700 border-r border-stone-200/60 relative group/sidebar"
+    >
       {/* Logo row */}
       <div className="h-12 flex items-center px-4 border-b border-stone-200/60">
         <div className="flex items-center gap-2 font-semibold text-stone-900 text-sm">
@@ -111,6 +142,17 @@ export function Sidebar() {
           </a>
         </div>
       </div>
+      {/* Drag handle — thin strip on the right edge */}
+      <div
+        onMouseDown={(e) => {
+          e.preventDefault();
+          dragging.current = true;
+          document.body.style.cursor = "col-resize";
+          document.body.style.userSelect = "none";
+        }}
+        className="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-emerald-500/40 transition-colors"
+        title="拖拽调整侧边栏宽度"
+      />
     </aside>
   );
 }
@@ -254,7 +296,7 @@ function TreeNode({ node, depth, currentId, onOpen, parentId, siblings, index }:
             onBlur={() => setRenaming(false)}
           />
         ) : (
-          <span className="truncate flex-1">{node.title}</span>
+          <span className="truncate flex-1" title={node.title}>{node.title}</span>
         )}
         <span className="flex items-center gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
           {/* Always-visible "+" per row: works on leaf too; backend promotes leaf to bundle automatically. */}
