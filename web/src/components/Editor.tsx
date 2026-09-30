@@ -5,6 +5,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirro
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
 import { githubLight } from "@uiw/codemirror-theme-github";
+import { remoteCursorsExtension } from "./editor/cursorOverlay";
 import { useStore } from "../store";
 import { api, type ConflictResult } from "../lib/api";
 import { connectPresence, disconnectPresence } from "../lib/ws";
@@ -108,6 +109,7 @@ export function Editor() {
           placeholder("开始写正文,Markdown 语法支持"),
           updateListener,
           pasteHandler,
+          remoteCursorsExtension(),
           EditorView.lineWrapping,
         ],
       }),

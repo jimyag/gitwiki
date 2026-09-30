@@ -5,6 +5,14 @@ export type SaveStatus = "idle" | "saving" | "saved" | "conflict" | "error";
 
 export interface Peer { user: string; name: string; page: string; since: number }
 
+export interface RemoteCursor {
+  user: string;
+  anchor: number;
+  head: number;
+  color: string;
+  at: number; // ms epoch, for staleness pruning
+}
+
 interface State {
   user: User | null;
   repos: Repo[];
@@ -16,6 +24,10 @@ interface State {
   dirty: boolean;
   saveStatus: SaveStatus;
   peers: Peer[];
+  remoteCursors: Record<string, RemoteCursor>;
+  setRemoteCursor(user: string, c: RemoteCursor): void;
+  removeRemoteCursor(user: string): void;
+  clearRemoteCursors(): void;
   lastSavedBy: string | null;
   lastSavedSha: string | null;
   setUser(u: User | null): void;
@@ -43,6 +55,14 @@ export const useStore = create<State>((set) => ({
   dirty: false,
   saveStatus: "idle",
   peers: [],
+  remoteCursors: {},
+  setRemoteCursor: (user, c) => set(s => ({ remoteCursors: { ...s.remoteCursors, [user]: c } })),
+  removeRemoteCursor: (user) => set(s => {
+    const next = { ...s.remoteCursors };
+    delete next[user];
+    return { remoteCursors: next };
+  }),
+  clearRemoteCursors: () => set({ remoteCursors: {} }),
   lastSavedBy: null,
   lastSavedSha: null,
   setUser: (user) => set({ user }),
@@ -50,7 +70,7 @@ export const useStore = create<State>((set) => ({
   setCurrentRepo: (currentRepo) => set({ currentRepo, tree: null, currentPageId: null, baseSha: "" }),
   setTree: (tree) => set({ tree }),
   openPage: (currentPageId, baseSha, isBundle) => set({ currentPageId, baseSha, isBundle, dirty: false, saveStatus: "idle" }),
-  closePage: () => set({ currentPageId: null, baseSha: "", isBundle: false, dirty: false, saveStatus: "idle", peers: [] }),
+  closePage: () => set({ currentPageId: null, baseSha: "", isBundle: false, dirty: false, saveStatus: "idle", peers: [], remoteCursors: {} }),
   markDirty: (dirty) => set({ dirty }),
   setSaveStatus: (saveStatus) => set({ saveStatus }),
   setPeers: (peers) => set({ peers }),

@@ -1,4 +1,4 @@
-import { useStore } from "../store";
+import { useStore, type RemoteCursor } from "../store";
 
 let ws: WebSocket | null = null;
 let currentKey: string | null = null;
@@ -17,7 +17,17 @@ export function connectPresence(slug: string, pageId: string) {
       if (msg.type === "peers") {
         st.setPeers(msg.peers || []);
       } else if (msg.type === "saved") {
-        if (msg.sha) st.onSaved(msg.user, msg.sha);
+        if (msg.sha && msg.user) st.onSaved(msg.user, msg.sha);
+      } else if (msg.type === "cursor") {
+        st.setRemoteCursor(msg.user, {
+          user: msg.user,
+          anchor: msg.anchor,
+          head: msg.head,
+          color: msg.color,
+          at: Date.now(),
+        } as RemoteCursor);
+      } else if (msg.type === "cursor-left") {
+        st.removeRemoteCursor(msg.user);
       }
     } catch {}
   };
@@ -38,4 +48,9 @@ export function disconnectPresence() {
     try { ws.close(); } catch {}
     ws = null;
   }
+}
+
+export function sendCursor(anchor: number, head: number) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: "cursor", anchor, head }));
 }

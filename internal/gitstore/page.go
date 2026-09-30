@@ -1,6 +1,7 @@
 package gitstore
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
@@ -23,7 +24,8 @@ import (
 // Page operations automatically migrate between forms.
 type Page struct {
 	ID      string  `json:"id"`       // e.g. "guide/install" - slash-separated, no extension
-	Title   string  `json:"title"`    // last segment
+	Title   string  `json:"title"`    // from front matter, fallback to last segment
+	Weight  int     `json:"weight"`   // 0 means unset
 	IsDir   bool    `json:"is_dir"`   // bundle form (or virtual: has children)
 	HasBody bool    `json:"has_body"` // has backing markdown file
 	Children []*Page `json:"children,omitempty"`
@@ -96,16 +98,23 @@ func (r *Repo) PageTree(ctx context.Context) (*Page, error) {
 					id += "/"
 				}
 				id += base
-				cur.Children = append(cur.Children, &Page{ID: id, Title: base, HasBody: true})
+				title, weight := readTitleWeight(path, base)
+				cur.Children = append(cur.Children, &Page{ID: id, Title: title, Weight: weight, HasBody: true})
 				continue
 			}
 			if last && isIndexMD {
-				// _index.md: parent (the dir this file lives in) is a bundle page with body
+				// bundle _index.md contributes title/weight to its parent dir page
 				if len(parts) == 1 {
 					root.HasBody = true
 					continue
 				}
-				continue // handled when descending into dir
+				title, weight := readTitleWeight(path, parts[len(parts)-2])
+				parentID := strings.Join(parts[:len(parts)-1], "/")
+				if n := findByID(root, parentID); n != nil {
+					if title != "" && title != parts[len(parts)-2] { n.Title = title }
+					n.Weight = weight
+				}
+				continue
 			}
 			// dir (or non-md file we ignore): descend / create stub dir page
 			if de.IsDir() {
@@ -139,11 +148,12 @@ func (r *Repo) PageTree(ctx context.Context) (*Page, error) {
 }
 
 func sortTree(p *Page) {
-	sort.Slice(p.Children, func(i, j int) bool {
+	sort.SliceStable(p.Children, func(i, j int) bool {
 		a, b := p.Children[i], p.Children[j]
-		if a.IsDir != b.IsDir {
-			return a.IsDir // dirs first
-		}
+		aw, bw := a.Weight, b.Weight
+		if aw == 0 { aw = 1 << 30 }
+		if bw == 0 { bw = 1 << 30 }
+		if aw != bw { return aw < bw }
 		return a.ID < b.ID
 	})
 	for _, c := range p.Children {
@@ -606,4 +616,92 @@ func (r *Repo) readDocAt(ctx context.Context, relMd string, sha string) (*PageDo
 		return nil, err
 	}
 	return ParsePage(out)
+}
+
+// OrderChildren rewrites the `weight` front matter of each child of parentID
+// in the order given. IDs must all live directly under parentID.
+// Single commit; if any page fails, no commit is made.
+func (r *Repo) OrderChildren(ctx context.Context, parentID string, orderedIDs []string, u *auth.User) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(orderedIDs) == 0 {
+		return nil
+	}
+	// ensure parent prefix matches
+	for _, id := range orderedIDs {
+		wantPrefix := ""
+		if parentID != "" {
+			wantPrefix = parentID + "/"
+		}
+		if !strings.HasPrefix(id, wantPrefix) {
+			return fmt.Errorf("id %q is not a direct child of %q", id, parentID)
+		}
+		rest := strings.TrimPrefix(id, wantPrefix)
+		if strings.Contains(rest, "/") {
+			return fmt.Errorf("id %q is not a direct child of %q", id, parentID)
+		}
+	}
+	name := u.Name
+	if name == "" { name = u.Login }
+	email := u.Email
+	if email == "" { email = u.Login + "@users.noreply.github.com" }
+
+	for i, id := range orderedIDs {
+		abs, isBundle, err := r.diskPath(id)
+		if err != nil {
+			return fmt.Errorf("page %q: %w", id, err)
+		}
+		data, err := os.ReadFile(abs)
+		if err != nil { return err }
+		doc, err := ParsePage(data)
+		if err != nil { return err }
+		doc.FrontMatter["weight"] = (i + 1) * 10 // leave gaps for future inserts
+		out, err := RenderPage(doc)
+		if err != nil { return err }
+		if bytes.Equal(data, out) { continue }
+		if err := os.WriteFile(abs, out, 0o644); err != nil { return err }
+		gitPath := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, relToMd(id, isBundle)))
+		if err := r.git(ctx, "add", "--", gitPath); err != nil { return err }
+	}
+	if err := r.git(ctx, "diff", "--cached", "--quiet"); err == nil {
+		return nil
+	}
+	env := []string{
+		"GIT_AUTHOR_NAME=" + name, "GIT_AUTHOR_EMAIL=" + email,
+		"GIT_COMMITTER_NAME=" + name, "GIT_COMMITTER_EMAIL=" + email,
+	}
+	msg := fmt.Sprintf("wiki: reorder pages under %s", parentID)
+	if parentID == "" { msg = "wiki: reorder top-level pages" }
+	if err := r.gitEnv(ctx, env, "commit", "-m", msg); err != nil { return err }
+	if err := r.setPushToken(ctx, u.Token); err != nil { return err }
+	if err := r.git(ctx, "push", "origin", r.cfg.Branch); err != nil {
+		return fmt.Errorf("%w: %v", ErrPush, err)
+	}
+	return nil
+}
+
+// readTitleWeight best-effort: parse front matter for title+weight. Falls back to fallbackTitle.
+func readTitleWeight(absPath string, fallbackTitle string) (title string, weight int) {
+	data, err := os.ReadFile(absPath)
+	if err != nil { return fallbackTitle, 0 }
+	doc, err := ParsePage(data)
+	if err != nil { return fallbackTitle, 0 }
+	if t, ok := doc.FrontMatter["title"].(string); ok && t != "" { title = t } else { title = fallbackTitle }
+	switch w := doc.FrontMatter["weight"].(type) {
+	case int:
+		weight = w
+	case int64:
+		weight = int(w)
+	case float64:
+		weight = int(w)
+	}
+	return
+}
+
+func findByID(root *Page, id string) *Page {
+	if root.ID == id { return root }
+	for _, c := range root.Children {
+		if n := findByID(c, id); n != nil { return n }
+	}
+	return nil
 }
