@@ -28,6 +28,7 @@ interface State {
   setSaveStatus(s: SaveStatus): void;
   setPeers(p: Peer[]): void;
   onSaved(by: string, sha: string): void;
+  clearSavedBanner(): void;
   bumpBaseSha(sha: string): void;
 }
 
@@ -54,5 +55,6 @@ export const useStore = create<State>((set) => ({
   setSaveStatus: (saveStatus) => set({ saveStatus }),
   setPeers: (peers) => set({ peers }),
   onSaved: (lastSavedBy, lastSavedSha) => set({ lastSavedBy, lastSavedSha }),
+  clearSavedBanner: () => set({ lastSavedBy: null, lastSavedSha: null }),
   bumpBaseSha: (baseSha) => set({ baseSha }),
 }));

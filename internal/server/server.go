@@ -6,8 +6,6 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
-	"os"
-	"path"
 	"strings"
 
 	"github.com/jimyag/gitwiki/internal/auth"
@@ -25,8 +23,8 @@ type Server struct {
 	static  fs.FS
 }
 
-func New(cfg *config.Config, as *auth.Store, gm *gitstore.Manager, ph *presence.Hub) *Server {
-	s := &Server{cfg: cfg, auth: as, git: gm, present: ph, mux: http.NewServeMux()}
+func New(cfg *config.Config, as *auth.Store, gm *gitstore.Manager, ph *presence.Hub, static fs.FS) *Server {
+	s := &Server{cfg: cfg, auth: as, git: gm, present: ph, mux: http.NewServeMux(), static: static}
 	s.routes()
 	return s
 }
@@ -44,6 +42,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/repos/{slug}/page", s.readPage)
 	s.mux.HandleFunc("PUT /api/repos/{slug}/page", s.savePage)
 	s.mux.HandleFunc("POST /api/repos/{slug}/page", s.createPage)
+	s.mux.HandleFunc("DELETE /api/repos/{slug}/page", s.deletePage)
+	s.mux.HandleFunc("PATCH /api/repos/{slug}/page", s.renamePage)
 	s.mux.HandleFunc("POST /api/repos/{slug}/assets", s.uploadAsset)
 
 	s.mux.Handle("GET /ws", s.present)
@@ -53,17 +53,22 @@ func (s *Server) routes() {
 }
 
 func (s *Server) spa(w http.ResponseWriter, r *http.Request) {
-	distRoot := "web/dist"
+	if s.static == nil {
+		http.Error(w, "static assets not embedded; run task build", http.StatusServiceUnavailable)
+		return
+	}
 	p := strings.TrimPrefix(r.URL.Path, "/")
 	if p == "" {
 		p = "index.html"
 	}
-	full := path.Join(distRoot, p)
-	if _, err := os.Stat(full); err == nil {
-		http.ServeFile(w, r, full)
+	if _, err := fs.Stat(s.static, p); err == nil {
+		http.FileServer(http.FS(s.static)).ServeHTTP(w, r)
 		return
 	}
-	http.ServeFile(w, r, path.Join(distRoot, "index.html"))
+	// SPA fallback: always return index.html for unknown non-API GETs.
+	r2 := r.Clone(r.Context())
+	r2.URL.Path = "/"
+	http.FileServer(http.FS(s.static)).ServeHTTP(w, r2)
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -288,6 +293,44 @@ func (s *Server) repoFor(w http.ResponseWriter, r *http.Request) (string, *gitst
 		return "", nil, false
 	}
 	return slug, grr, true
+}
+
+func (s *Server) deletePage(w http.ResponseWriter, r *http.Request) {
+	u := s.auth.CurrentUser(r)
+	if u == nil { http.Error(w, "unauthorized", http.StatusUnauthorized); return }
+	slug, rr, ok := s.repoFor(w, r)
+	if !ok { return }
+	id := r.URL.Query().Get("id")
+	if id == "" { http.Error(w, "id required", http.StatusBadRequest); return }
+	if err := rr.DeletePage(r.Context(), id, u, ""); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError); return
+	}
+	s.present.BroadcastSaved(slug, id, "", u.Login)
+	writeJSON(w, map[string]string{"status": "deleted"})
+}
+
+type renameReq struct {
+	OldID string `json:"old_id"`
+	NewID string `json:"new_id"`
+}
+
+func (s *Server) renamePage(w http.ResponseWriter, r *http.Request) {
+	u := s.auth.CurrentUser(r)
+	if u == nil { http.Error(w, "unauthorized", http.StatusUnauthorized); return }
+	slug, rr, ok := s.repoFor(w, r)
+	if !ok { return }
+	var req renameReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest); return
+	}
+	if req.OldID == "" || req.NewID == "" {
+		http.Error(w, "old_id and new_id required", http.StatusBadRequest); return
+	}
+	if err := rr.RenamePage(r.Context(), req.OldID, req.NewID, u); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError); return
+	}
+	s.present.BroadcastSaved(slug, req.OldID, "", u.Login)
+	writeJSON(w, map[string]string{"status": "renamed", "id": req.NewID})
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

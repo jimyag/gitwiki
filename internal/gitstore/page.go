@@ -73,6 +73,10 @@ func (r *Repo) PageTree(ctx context.Context) (*Page, error) {
 			}
 			return nil
 		}
+		// Skip asset directories; they hold page attachments, not pages.
+		if de.IsDir() && name == "assets" {
+			return filepath.SkipDir
+		}
 		rel, _ := filepath.Rel(contentRoot, path)
 		if rel == "." {
 			return nil
@@ -425,3 +429,112 @@ func extBySniff(r io.Reader) string {
 	}
 	return ".bin"
 }
+// DeletePage removes a page. For leaf pages removes the .md file. For bundle pages
+// removes _index.md and (only if keepChildren=false) the whole directory.
+// Currently requires keepChildren=true (we refuse to cascade).
+func (r *Repo) DeletePage(ctx context.Context, id string, u *auth.User, message string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	abs, isBundle, err := r.diskPath(id)
+	if err != nil {
+		return err
+	}
+	if isBundle {
+		// Check for children
+		dir := filepath.Dir(abs)
+		ents, _ := os.ReadDir(dir)
+		hasOthers := false
+		for _, e := range ents {
+			if e.Name() != "_index.md" {
+				hasOthers = true
+				break
+			}
+		}
+		if hasOthers {
+			return fmt.Errorf("bundle page %q still has children or assets; delete them first", id)
+		}
+	}
+	if err := os.Remove(abs); err != nil {
+		return err
+	}
+	gitPath := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, relToMd(id, isBundle)))
+	r.git(ctx, "rm", "-q", "--", gitPath) // may already be staged by os.Remove
+	if err := r.git(ctx, "add", "-u", "--", gitPath); err != nil {
+		return err
+	}
+	if message == "" {
+		message = "wiki: delete " + id
+	}
+	name := u.Name
+	if name == "" { name = u.Login }
+	email := u.Email
+	if email == "" { email = u.Login + "@users.noreply.github.com" }
+	env := []string{
+		"GIT_AUTHOR_NAME=" + name, "GIT_AUTHOR_EMAIL=" + email,
+		"GIT_COMMITTER_NAME=" + name, "GIT_COMMITTER_EMAIL=" + email,
+	}
+	if err := r.gitEnv(ctx, env, "commit", "-m", message); err != nil {
+		return err
+	}
+	if err := r.setPushToken(ctx, u.Token); err != nil {
+		return err
+	}
+	if err := r.git(ctx, "push", "origin", r.cfg.Branch); err != nil {
+		return fmt.Errorf("%w: %v", ErrPush, err)
+	}
+	return nil
+}
+
+// RenamePage moves a page (incl. its assets dir) to a new ID. Renames use git mv if both
+// source and destination exist as files; else it falls back to os.Rename + git add -A.
+func (r *Repo) RenamePage(ctx context.Context, oldID, newID string, u *auth.User) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if oldID == "" || newID == "" || oldID == newID {
+		return ErrBadPath
+	}
+	abs, isBundle, err := r.diskPath(oldID)
+	if err != nil {
+		return err
+	}
+	// Refuse if destination already exists.
+	if _, _, err := r.diskPath(newID); err == nil {
+		return fmt.Errorf("destination exists: %s", newID)
+	}
+	if isBundle {
+		// Move whole directory: <old>/ → <new>/
+		srcDir := filepath.Dir(abs)
+		dstDir, e := r.resolvePath(newID)
+		if e != nil { return e }
+		if err := os.MkdirAll(filepath.Dir(dstDir), 0o755); err != nil { return err }
+		if err := os.Rename(srcDir, dstDir); err != nil { return err }
+		gitOld := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, oldID))
+		gitNew := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, newID))
+		if err := r.git(ctx, "add", "-A", "--", gitOld, gitNew); err != nil { return err }
+	} else {
+		// Leaf move: content/old.md → content/new.md
+		dst, e := r.resolvePath(newID + ".md")
+		if e != nil { return e }
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil { return err }
+		if err := os.Rename(abs, dst); err != nil { return err }
+		gitOld := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, oldID+".md"))
+		gitNew := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, newID+".md"))
+		if err := r.git(ctx, "add", "-A", "--", gitOld, gitNew); err != nil { return err }
+	}
+	name := u.Name
+	if name == "" { name = u.Login }
+	email := u.Email
+	if email == "" { email = u.Login + "@users.noreply.github.com" }
+	env := []string{
+		"GIT_AUTHOR_NAME=" + name, "GIT_AUTHOR_EMAIL=" + email,
+		"GIT_COMMITTER_NAME=" + name, "GIT_COMMITTER_EMAIL=" + email,
+	}
+	msg := fmt.Sprintf("wiki: rename %s → %s", oldID, newID)
+	if err := r.gitEnv(ctx, env, "commit", "-m", msg); err != nil { return err }
+	if err := r.setPushToken(ctx, u.Token); err != nil { return err }
+	if err := r.git(ctx, "push", "origin", r.cfg.Branch); err != nil {
+		return fmt.Errorf("%w: %v", ErrPush, err)
+	}
+	return nil
+}
+

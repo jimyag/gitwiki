@@ -10,6 +10,7 @@ import (
 	"github.com/jimyag/gitwiki/internal/gitstore"
 	"github.com/jimyag/gitwiki/internal/presence"
 	"github.com/jimyag/gitwiki/internal/server"
+	gitweb "github.com/jimyag/gitwiki/internal/web"
 )
 
 func main() {
@@ -23,7 +24,11 @@ func main() {
 	as := auth.NewStore(cfg)
 	gm := gitstore.NewManager(cfg)
 	ph := presence.NewHub(as)
-	s := server.New(cfg, as, gm, ph)
+	static, err := gitweb.Dist()
+	if err != nil {
+		log.Fatalf("load embedded dist: %v (run `bun --cwd web run build` first)", err)
+	}
+	s := server.New(cfg, as, gm, ph, static)
 
 	log.Printf("listening on %s", cfg.Listen)
 	if err := http.ListenAndServe(cfg.Listen, s.Handler()); err != nil {
