@@ -1,0 +1,18 @@
+listen: "127.0.0.1:8080"
+
+github:
+  # Create at https://github.com/settings/developers → New OAuth App
+  # Authorization callback URL: http://localhost:8080/auth/callback (or your public URL)/auth/callback
+  client_id: ""
+  client_secret: ""
+
+# openssl rand -hex 32
+session_secret: ""
+
+repos:
+  - slug: my-wiki
+    github: owner/repo
+    branch: main
+    workdir: ./data/repos/my-wiki
+    content_dir: content
+    title: My Wiki

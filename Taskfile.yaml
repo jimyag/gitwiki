@@ -1,0 +1,37 @@
+version: "3"
+
+tasks:
+  default:
+    cmds: [task --list-all]
+    silent: true
+
+  dev:
+    desc: Start backend + frontend dev server in parallel
+    deps: [dev-backend, dev-frontend]
+
+  dev-backend:
+    cmds: [go run ./cmd/gitwiki -config config.yaml]
+
+  dev-frontend:
+    cmds: [bun --cwd web run dev]
+
+  build:
+    desc: Build frontend and backend binary
+    cmds:
+      - bun --cwd web install --frozen-lockfile
+      - bun --cwd web run build
+      - go build -trimpath -ldflags "-s -w" -o gitwiki ./cmd/gitwiki
+
+  test:
+    desc: Run backend tests
+    cmds: [go test ./...]
+
+  check:
+    desc: Typecheck + vet
+    cmds:
+      - bun --cwd web run typecheck
+      - go vet ./...
+
+  clean:
+    cmds:
+      - rm -rf web/dist web/node_modules gitwiki
