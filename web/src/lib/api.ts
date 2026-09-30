@@ -61,6 +61,10 @@ export const api = {
     req<{ status: string }>(`/api/repos/${slug}/order`, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ parent_id: parentId, ordered_ids: orderedIds }) }),
   retitlePage: (slug: string, id: string, title: string) =>
     req<{ id: string; commit_sha: string }>(`/api/repos/${slug}/page`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ id, title }) }),
+  listAssets: (slug: string, pageId: string) =>
+    req<string[]>(`/api/repos/${slug}/assets?page_id=${encodeURIComponent(pageId)}`),
+  assetUrl: (slug: string, pageId: string, name: string) =>
+    `/api/repos/${slug}/asset?page_id=${encodeURIComponent(pageId)}&name=${encodeURIComponent(name)}`,
   uploadAsset: async (slug: string, pageId: string, file: File): Promise<AssetUpload> => {
     const fd = new FormData();
     fd.append("page_id", pageId);

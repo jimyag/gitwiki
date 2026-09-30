@@ -9,8 +9,9 @@ import { useStore } from "../store";
 import { api, type ConflictResult } from "../lib/api";
 import { connectPresence, disconnectPresence } from "../lib/ws";
 import { toast } from "sonner";
-import { X } from "lucide-react";
+import { X, Paperclip } from "lucide-react";
 import { DiffView } from "./editor/DiffView";
+import { AssetsPanel } from "./AssetsPanel";
 import { remoteCursorsExtension } from "./editor/cursorOverlay";
 
 interface LoadedPage {
@@ -35,6 +36,7 @@ export function Editor() {
   const [conflict, setConflict] = useState<ConflictResult | null>(null);
   const [loaded, setLoaded] = useState<LoadedPage | null>(null);
   const [titleInput, setTitleInput] = useState("");
+  const [showAssets, setShowAssets] = useState(false);
 
   useEffect(() => {
     if (!currentRepo || !pageId) return;
@@ -182,13 +184,22 @@ export function Editor() {
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Close button in top-right corner (mostly there for keyboard; visual weight is low) */}
       <div className="absolute right-6 top-16 z-10">
-        <button
-          onClick={() => closePage()}
-          title="关闭 (Cmd+W)"
-          className="p-1.5 rounded-md text-stone-300 hover:text-stone-600 hover:bg-stone-100 transition"
-        >
-          <X className="size-3.5" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setShowAssets(true)}
+            title="附件"
+            className="p-1.5 rounded-md text-stone-300 hover:text-stone-600 hover:bg-stone-100 transition"
+          >
+            <Paperclip className="size-3.5" />
+          </button>
+          <button
+            onClick={() => closePage()}
+            title="关闭"
+            className="p-1.5 rounded-md text-stone-300 hover:text-stone-600 hover:bg-stone-100 transition"
+          >
+            <X className="size-3.5" />
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-auto">
@@ -207,7 +218,8 @@ export function Editor() {
           {/* Body */}
           <div ref={ref} className="editor-body min-h-[50vh]" />
           {/* Footer meta */}
-          {loaded?.last_author && (
+          {showAssets && <AssetsPanel onClose={() => setShowAssets(false)} />}
+      {loaded?.last_author && (
             <div className="mt-12 pt-4 border-t border-stone-100 text-xs text-stone-400 flex items-center gap-2">
               <span>最后由 <span className="font-medium text-stone-600">{loaded.last_author}</span> 编辑</span>
               <span className="text-stone-300">·</span>
