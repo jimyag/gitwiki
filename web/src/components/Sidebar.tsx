@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useStore } from "../store";
 import { api, type PageMeta } from "../lib/api";
-import { FileText, Folder, FolderOpen, Plus, ChevronRight, ChevronDown, ChevronUp, ChevronDown as ChevronDownIcon, Trash2, Pencil, BookOpen, LogOut } from "lucide-react";
+import { FileText, Folder, FolderOpen, Plus, ChevronRight, ChevronDown, BookOpen, LogOut } from "lucide-react";
 import { toast } from "sonner";
 
 // Stable color from user login. Used in avatar and cursor.
@@ -159,64 +159,42 @@ export function Sidebar() {
 
 function Tree({ node, currentId, onOpen }: { node: PageMeta; currentId: string | null; onOpen: (n: PageMeta) => void }) {
   return (
-    <TreeList siblings={node.children || []} parentId="" depth={0} currentId={currentId} onOpen={onOpen} />
+    <TreeList siblings={node.children || []} depth={0} currentId={currentId} onOpen={onOpen} />
   );
 }
 
-function TreeList({ siblings, parentId, depth, currentId, onOpen }: {
+function TreeList({ siblings, depth, currentId, onOpen }: {
   siblings: PageMeta[];
-  parentId: string;
   depth: number;
   currentId: string | null;
   onOpen: (n: PageMeta) => void;
 }) {
   return (
     <>
-      {siblings.map((c, i) => (
+      {siblings.map((c) => (
         <TreeNode
           key={c.id}
           node={c}
           depth={depth}
           currentId={currentId}
           onOpen={onOpen}
-          parentId={parentId}
-          siblings={siblings}
-          index={i}
         />
       ))}
     </>
   );
 }
 
-function TreeNode({ node, depth, currentId, onOpen, parentId, siblings, index }: {
+function TreeNode({ node, depth, currentId, onOpen }: {
   node: PageMeta;
   depth: number;
   currentId: string | null;
   onOpen: (n: PageMeta) => void;
-  parentId: string;
-  siblings: PageMeta[];
-  index: number;
 }) {
   const [open, setOpen] = useState(depth < 2);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(node.title);
   const currentRepo = useStore(s => s.currentRepo);
   const active = currentId === node.id;
-
-  const move = async (dir: -1 | 1) => {
-    if (!currentRepo) return;
-    const j = index + dir;
-    if (j < 0 || j >= siblings.length) return;
-    const next = [...siblings];
-    [next[index], next[j]] = [next[j], next[index]];
-    try {
-      await api.reorderPages(currentRepo, parentId, next.map(x => x.id));
-      const tree = await api.pageTree(currentRepo);
-      useStore.getState().setTree(tree);
-    } catch (e: any) {
-      toast.error(`排序失败: ${e.message}`);
-    }
-  };
 
   const onRename = async () => {
     if (!currentRepo || !renameValue.trim() || renameValue === node.title) { setRenaming(false); return; }
@@ -231,30 +209,6 @@ function TreeNode({ node, depth, currentId, onOpen, parentId, siblings, index }:
     setRenaming(false);
   };
 
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  useEffect(() => {
-    if (!confirmDelete) return;
-    const t = setTimeout(() => setConfirmDelete(false), 2500);
-    return () => clearTimeout(t);
-  }, [confirmDelete]);
-
-  const onDelete = async () => {
-    if (!currentRepo) return;
-    if (!confirmDelete) {
-      setConfirmDelete(true);
-      return;
-    }
-    try {
-      await api.deletePage(currentRepo, node.id);
-      const tree = await api.pageTree(currentRepo);
-      useStore.getState().setTree(tree);
-      if (useStore.getState().currentPageId === node.id) useStore.getState().closePage();
-      toast.success("已删除");
-    } catch (e: any) {
-      toast.error(`删除失败: ${e.message}`);
-      setConfirmDelete(false);
-    }
-  };
 
   return (
     <div>
@@ -298,36 +252,14 @@ function TreeNode({ node, depth, currentId, onOpen, parentId, siblings, index }:
         ) : (
           <span className="truncate flex-1" title={node.title}>{node.title}</span>
         )}
-        <span className="flex items-center gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
-          {/* Always-visible "+" per row: works on leaf too; backend promotes leaf to bundle automatically. */}
+        {/* "+" always visible: works on leaf too; backend promotes leaf to bundle automatically.
+             Other actions (move/rename/delete) live in the TopBar. */}
+        <span className="opacity-0 group-hover:opacity-100 shrink-0" onClick={(e) => e.stopPropagation()}>
           <NewPageButton parentId={node.id} />
-          <span className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5">
-            <button title="上移" disabled={index === 0} className="p-1 rounded hover:bg-stone-200 text-stone-500 hover:text-stone-800 disabled:opacity-20" onClick={() => move(-1)}>
-              <ChevronUp className="size-3" />
-            </button>
-            <button title="下移" disabled={index === siblings.length - 1} className="p-1 rounded hover:bg-stone-200 text-stone-500 hover:text-stone-800 disabled:opacity-20" onClick={() => move(1)}>
-              <ChevronDownIcon className="size-3" />
-            </button>
-            <button title="重命名" className="p-1 rounded hover:bg-stone-200 text-stone-500 hover:text-stone-800" onClick={() => setRenaming(true)}>
-              <Pencil className="size-3" />
-            </button>
-            <button
-              title={confirmDelete ? "再点一次确认删除" : "删除"}
-              className={
-                "p-1 rounded transition " +
-                (confirmDelete
-                  ? "bg-red-500 text-white"
-                  : "hover:bg-red-50 text-red-500 hover:text-red-700")
-              }
-              onClick={onDelete}
-            >
-              <Trash2 className="size-3" />
-            </button>
-          </span>
         </span>
       </div>
       {open && node.is_dir && (
-        <TreeList siblings={node.children || []} parentId={node.id} depth={depth + 1} currentId={currentId} onOpen={onOpen} />
+        <TreeList siblings={node.children || []} depth={depth + 1} currentId={currentId} onOpen={onOpen} />
       )}
     </div>
   );
