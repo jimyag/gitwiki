@@ -6,12 +6,13 @@ import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
 import { githubLight } from "@uiw/codemirror-theme-github";
 import { useStore } from "../store";
-import { api, type ConflictResult } from "../lib/api";
+import { api, type ConflictResult, type PageContent } from "../lib/api";
 import { connectPresence, disconnectPresence } from "../lib/ws";
 import { toast } from "sonner";
-import { X, Paperclip } from "lucide-react";
+import { X, Paperclip, Pencil, Eye, Save } from "lucide-react";
 import { DiffView } from "./editor/DiffView";
 import { AssetsPanel } from "./AssetsPanel";
+import { Preview } from "./Preview";
 import { remoteCursorsExtension } from "./editor/cursorOverlay";
 
 interface LoadedPage {
@@ -21,6 +22,8 @@ interface LoadedPage {
   last_commit_at?: string;
   last_commit_sha?: string;
 }
+
+type Mode = "view" | "edit";
 
 export function Editor() {
   const ref = useRef<HTMLDivElement>(null);
@@ -32,27 +35,23 @@ export function Editor() {
   const markDirty = useStore(s => s.markDirty);
   const bumpBaseSha = useStore(s => s.bumpBaseSha);
   const closePage = useStore(s => s.closePage);
+  const saveStatus = useStore(s => s.saveStatus);
 
+  const [mode, setMode] = useState<Mode>("view");
   const [conflict, setConflict] = useState<ConflictResult | null>(null);
   const [loaded, setLoaded] = useState<LoadedPage | null>(null);
   const [titleInput, setTitleInput] = useState("");
   const [showAssets, setShowAssets] = useState(false);
+  // Bump to force CodeMirror re-init when entering edit mode with loaded body.
 
   useEffect(() => {
     if (!currentRepo || !pageId) return;
     let cancelled = false;
+    setMode("view"); // opening a page → default to preview
     (async () => {
       const pc = await api.readPage(currentRepo, pageId);
       if (cancelled) return;
-      setLoaded({
-        title: pc.title,
-        body: pc.body,
-        last_author: pc.last_author,
-        last_commit_at: pc.last_commit_at,
-        last_commit_sha: pc.last_commit_sha,
-      });
-      setTitleInput(pc.title);
-      useStore.getState().bumpBaseSha(pc.base_sha);
+      applyLoaded(pc);
       connectPresence(currentRepo, pageId);
     })();
     return () => {
@@ -61,8 +60,34 @@ export function Editor() {
     };
   }, [currentRepo, pageId]);
 
+  function applyLoaded(pc: PageContent) {
+    setLoaded({
+      title: pc.title,
+      body: pc.body,
+      last_author: pc.last_author,
+      last_commit_at: pc.last_commit_at,
+      last_commit_sha: pc.last_commit_sha,
+    });
+    setTitleInput(pc.title);
+    useStore.getState().bumpBaseSha(pc.base_sha);
+    markDirty(false);
+  }
+
+  // Cmd+S / Ctrl+S global handler when in edit mode.
   useEffect(() => {
-    if (!ref.current || loaded === null) return;
+    if (mode !== "edit") return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+        e.preventDefault();
+        void doSave();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  useEffect(() => {
+    if (mode !== "edit" || !ref.current || loaded === null) return;
     const updateListener = EditorView.updateListener.of(u => {
       if (u.docChanged) markDirty(true);
     });
@@ -121,7 +146,7 @@ export function Editor() {
       view.destroy();
       viewRef.current = null;
     };
-  }, [loaded]);
+  }, [mode, loaded?.body]);
 
   async function doSave() {
     if (!currentRepo || !pageId || !viewRef.current) return;
@@ -148,8 +173,15 @@ export function Editor() {
         setTimeout(() => setSaveStatus("idle"), 1500);
         if (currentRepo && pageId) {
           const pc = await api.readPage(currentRepo, pageId);
-          setLoaded(prev => prev ? { ...prev, last_author: pc.last_author, last_commit_at: pc.last_commit_at, last_commit_sha: pc.last_commit_sha } : null);
+          applyLoaded(pc);
+          // reflect new body in editor
+          if (viewRef.current) {
+            viewRef.current.dispatch({
+              changes: { from: 0, to: viewRef.current.state.doc.length, insert: pc.body },
+            });
+          }
         }
+        setMode("view");
       }
     } catch (e: any) {
       setSaveStatus("error");
@@ -181,45 +213,78 @@ export function Editor() {
   }
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
-      {/* Close button in top-right corner (mostly there for keyboard; visual weight is low) */}
-      <div className="absolute right-6 top-16 z-10">
-        <div className="flex items-center gap-1">
+    <div className="flex-1 flex flex-col overflow-hidden bg-white">
+      {/* Toolbar */}
+      <div className="absolute right-6 top-4 z-10 flex items-center gap-1 bg-white rounded-md shadow-sm border border-stone-200 p-0.5">
+        <button
+          onClick={() => mode === "view" ? setMode("edit") : setMode("view")}
+          title={mode === "edit" ? "切换到预览" : "编辑 (E)"}
+          className="inline-flex items-center gap-1 px-2 py-1.5 rounded text-xs font-medium text-stone-600 hover:bg-stone-100 hover:text-stone-900 transition"
+        >
+          {mode === "edit" ? <Eye className="size-3.5" /> : <Pencil className="size-3.5" />}
+          {mode === "edit" ? "预览" : "编辑"}
+        </button>
+        {mode === "edit" && (
           <button
-            onClick={() => setShowAssets(true)}
-            title="附件"
-            className="p-1.5 rounded-md text-stone-300 hover:text-stone-600 hover:bg-stone-100 transition"
+            onClick={() => void doSave()}
+            disabled={saveStatus === "saving"}
+            title="保存 (⌘S)"
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-xs font-medium bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 transition"
           >
-            <Paperclip className="size-3.5" />
+            <Save className="size-3.5" />
+            保存
           </button>
-          <button
-            onClick={() => closePage()}
-            title="关闭"
-            className="p-1.5 rounded-md text-stone-300 hover:text-stone-600 hover:bg-stone-100 transition"
-          >
-            <X className="size-3.5" />
-          </button>
-        </div>
+        )}
+        <button
+          onClick={() => setShowAssets(true)}
+          title="附件"
+          className="inline-flex items-center gap-1 px-2 py-1.5 rounded text-xs font-medium text-stone-600 hover:bg-stone-100 hover:text-stone-900 transition"
+        >
+          <Paperclip className="size-3.5" />
+        </button>
+        <button
+          onClick={() => closePage()}
+          title="关闭"
+          className="inline-flex items-center px-2 py-1.5 rounded text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition"
+        >
+          <X className="size-3.5" />
+        </button>
       </div>
+
+      {showAssets && <AssetsPanel onClose={() => setShowAssets(false)} />}
 
       <div className="flex-1 overflow-auto">
         <article className="max-w-[720px] mx-auto px-10 pt-12 pb-24">
           {/* Title */}
-          <input
-            value={titleInput}
-            onChange={(e) => {
-              setTitleInput(e.target.value);
-              markDirty(true);
-            }}
-            placeholder="未命名页面"
-            className="w-full text-[38px] font-bold tracking-tight outline-none placeholder:text-stone-300 text-stone-900 bg-transparent leading-[1.2] mb-6 pb-4 border-b border-transparent focus:border-stone-100 transition"
-            style={{ fontFamily: '"Source Serif 4", Georgia, "Songti SC", serif' }}
-          />
+          {mode === "edit" ? (
+            <input
+              value={titleInput}
+              onChange={(e) => {
+                setTitleInput(e.target.value);
+                markDirty(true);
+              }}
+              placeholder="未命名页面"
+              className="w-full text-[38px] font-bold tracking-tight outline-none placeholder:text-stone-300 text-stone-900 bg-transparent leading-[1.2] mb-6 pb-4 border-b border-transparent focus:border-stone-100 transition"
+              style={{ fontFamily: '"Source Serif 4", Georgia, "Songti SC", serif' }}
+            />
+          ) : (
+            <h1
+              className="text-[38px] font-bold tracking-tight text-stone-900 leading-[1.2] mb-6 pb-4 border-b border-stone-100"
+              style={{ fontFamily: '"Source Serif 4", Georgia, "Songti SC", serif' }}
+            >
+              {titleInput || "未命名页面"}
+            </h1>
+          )}
+
           {/* Body */}
-          <div ref={ref} className="editor-body min-h-[50vh]" />
+          {mode === "edit" ? (
+            <div ref={ref} className="editor-body min-h-[50vh]" />
+          ) : (
+            <Preview body={loaded?.body ?? ""} />
+          )}
+
           {/* Footer meta */}
-          {showAssets && <AssetsPanel onClose={() => setShowAssets(false)} />}
-      {loaded?.last_author && (
+          {loaded?.last_author && (
             <div className="mt-12 pt-4 border-t border-stone-100 text-xs text-stone-400 flex items-center gap-2">
               <span>最后由 <span className="font-medium text-stone-600">{loaded.last_author}</span> 编辑</span>
               <span className="text-stone-300">·</span>
