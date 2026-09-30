@@ -53,14 +53,14 @@ export const api = {
     if (!r.ok) throw new Error(await r.text());
     return (await r.json()) as SaveResult;
   },
-  createPage: (slug: string, p: { parent_id?: string; slug: string; title: string }) =>
+  createPage: (slug: string, p: { parent_id?: string; title: string }) =>
     req<{ id: string }>(`/api/repos/${slug}/page`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(p) }),
   deletePage: (slug: string, id: string) =>
     req<{ status: string }>(`/api/repos/${slug}/page?id=${encodeURIComponent(id)}`, { method: "DELETE" }),
   reorderPages: (slug: string, parentId: string, orderedIds: string[]) =>
     req<{ status: string }>(`/api/repos/${slug}/order`, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ parent_id: parentId, ordered_ids: orderedIds }) }),
-  renamePage: (slug: string, oldId: string, newId: string) =>
-    req<{ id: string }>(`/api/repos/${slug}/page`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ old_id: oldId, new_id: newId }) }),
+  retitlePage: (slug: string, id: string, title: string) =>
+    req<{ id: string; commit_sha: string }>(`/api/repos/${slug}/page`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ id, title }) }),
   uploadAsset: async (slug: string, pageId: string, file: File): Promise<AssetUpload> => {
     const fd = new FormData();
     fd.append("page_id", pageId);

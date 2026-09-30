@@ -3,6 +3,8 @@ package gitstore
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/json"
 	"crypto/sha1"
 	"encoding/hex"
 	"errors"
@@ -11,6 +13,7 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -321,25 +324,49 @@ func (r *Repo) SavePage(ctx context.Context, id string, doc *PageDoc, baseSHA, m
 }
 
 // CreatePage creates an empty page with front matter. If parentID != "", page is nested.
-// Returns the final page ID.
-func (r *Repo) CreatePage(ctx context.Context, parentID, slug, title string, u *auth.User) (string, error) {
-	if slug == "" || strings.Contains(slug, "/") || strings.Contains(slug, "..") {
+// Slug is generated server-side; users only see and edit titles.
+func (r *Repo) CreatePage(ctx context.Context, parentID, title string, u *auth.User) (string, error) {
+	if title == "" {
 		return "", ErrBadPath
 	}
-	id := slug
-	if parentID != "" {
-		id = parentID + "/" + slug
+	// Generate a random slug, retry on collision (astronomically rare).
+	var id string
+	for i := 0; i < 5; i++ {
+		slug := randomSlug(8)
+		candidate := slug
+		if parentID != "" {
+			candidate = parentID + "/" + slug
+		}
+		if _, _, err := r.diskPath(candidate); errors.Is(err, ErrNotFound) {
+			id = candidate
+			break
+		}
+	}
+	if id == "" {
+		return "", fmt.Errorf("could not allocate unique slug")
 	}
 	doc := &PageDoc{
 		FrontMatter: map[string]any{"title": title},
 		Body:        "",
 	}
-	sha, err := r.SavePage(ctx, id, doc, "", "wiki: new page "+id, u)
-	if err != nil {
+	if _, err := r.SavePage(ctx, id, doc, "", "wiki: new page "+title, u); err != nil {
 		return "", err
 	}
-	_ = sha
 	return id, nil
+}
+
+const slugAlphabet = "23456789abcdefghjkmnpqrstuvwxyz" // no 0/1/o/i/l to avoid visual ambiguity
+
+func randomSlug(n int) string {
+	b := make([]byte, n)
+	raw := make([]byte, n)
+	if _, err := rand.Read(raw); err != nil {
+		panic(err)
+	}
+	for i := range b {
+		b[i] = slugAlphabet[int(raw[i])%len(slugAlphabet)]
+	}
+	return string(b)
 }
 
 // relToMd returns the on-disk markdown path (relative to content dir) for a page id.
@@ -704,4 +731,227 @@ func findByID(root *Page, id string) *Page {
 		if n := findByID(c, id); n != nil { return n }
 	}
 	return nil
+}
+
+
+// SearchResult is one matched line in one page.
+type SearchResult struct {
+	PageID  string `json:"page_id"`
+	Title   string `json:"title"`
+	Path    string `json:"path"`
+	Line    int    `json:"line"` // 1-based; 0 means filename/title-only match
+	Snippet string `json:"snippet"`
+}
+
+// Search uses ripgrep when available, otherwise falls back to a Go walk.
+// Query matches title, body, and file path, case-insensitively. Result capped at 50.
+func (r *Repo) Search(ctx context.Context, q string) ([]SearchResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if q == "" || len(q) > 256 {
+		return nil, ErrBadPath
+	}
+	contentRoot := filepath.Join(r.cfg.Workdir, r.cfg.ContentDir)
+	if rg, err := exec.LookPath("rg"); err == nil {
+		return r.searchWithRg(ctx, rg, q, contentRoot)
+	}
+	return r.searchWithWalk(ctx, q, contentRoot)
+}
+
+func (r *Repo) searchWithRg(ctx context.Context, rg, q, contentRoot string) ([]SearchResult, error) {
+	contentCmd := exec.CommandContext(ctx, rg,
+		"--json", "-i", "--max-count", "5",
+		"-g", "*.md", "-g", "!**/assets/**",
+		"--", q,
+	)
+	contentCmd.Dir = contentRoot
+	contentOut, _ := contentCmd.Output()
+
+	pathCmd := exec.CommandContext(ctx, rg, "--files", "-g", "*.md", "-g", "!**/assets/**")
+	pathCmd.Dir = contentRoot
+	pathOut, _ := pathCmd.Output()
+
+	results := []SearchResult{}
+	seenContent := map[string]bool{}
+	titleCache := map[string]string{}
+
+	for _, line := range bytes.Split(contentOut, []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var ev struct {
+			Type string `json:"type"`
+			Data struct {
+				Path  struct{ Text string `json:"text"` } `json:"path"`
+				Lines struct{ Text string `json:"text"` } `json:"lines"`
+				LineNumber int `json:"line_number"`
+			} `json:"data"`
+		}
+		if json.Unmarshal(line, &ev) != nil || ev.Type != "match" {
+			continue
+		}
+		rel := filepath.ToSlash(ev.Data.Path.Text)
+		id, title := r.pageIDAndTitle(rel, contentRoot, titleCache)
+		snippet := strings.TrimSpace(ev.Data.Lines.Text)
+		if len(snippet) > 200 {
+			snippet = snippet[:200] + "…"
+		}
+		key := id + "|" + snippet
+		if seenContent[key] {
+			continue
+		}
+		seenContent[key] = true
+		results = append(results, SearchResult{
+			PageID: id, Title: title, Path: rel,
+			Line: ev.Data.LineNumber, Snippet: snippet,
+		})
+		if len(results) >= 50 {
+			return results, nil
+		}
+	}
+
+	qLower := strings.ToLower(q)
+	for _, ln := range bytes.Split(pathOut, []byte("\n")) {
+		if len(ln) == 0 {
+			continue
+		}
+		rel := filepath.ToSlash(string(ln))
+		if !strings.Contains(strings.ToLower(rel), qLower) {
+			continue
+		}
+		id, title := r.pageIDAndTitle(rel, contentRoot, titleCache)
+		results = append(results, SearchResult{
+			PageID: id, Title: title, Path: rel,
+			Line: 0, Snippet: "路径匹配: " + rel,
+		})
+		if len(results) >= 50 {
+			return results, nil
+		}
+	}
+	return results, nil
+}
+
+func (r *Repo) searchWithWalk(ctx context.Context, q, contentRoot string) ([]SearchResult, error) {
+	qLower := strings.ToLower(q)
+	out := []SearchResult{}
+	titleCache := map[string]string{}
+	err := filepath.WalkDir(contentRoot, func(path string, de os.DirEntry, err error) error {
+		if err != nil || de.IsDir() {
+			if de != nil && de.IsDir() && (strings.HasPrefix(de.Name(), ".") || de.Name() == "assets") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(de.Name(), ".md") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		if len(data) > 200_000 {
+			data = data[:200_000]
+		}
+		doc, err := ParsePage(data)
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(contentRoot, path)
+		rel = filepath.ToSlash(rel)
+		id, title := r.pageIDAndTitle(rel, contentRoot, titleCache)
+		if strings.Contains(strings.ToLower(title), qLower) || strings.Contains(strings.ToLower(rel), qLower) {
+			out = append(out, SearchResult{PageID: id, Title: title, Path: rel, Line: 0, Snippet: "标题 / 路径匹配"})
+		}
+		for i, line := range strings.Split(doc.Body, "\n") {
+			if strings.Contains(strings.ToLower(line), qLower) {
+				sn := strings.TrimSpace(line)
+				if len(sn) > 200 {
+					sn = sn[:200] + "…"
+				}
+				out = append(out, SearchResult{PageID: id, Title: title, Path: rel, Line: i + 1, Snippet: sn})
+				if len(out) >= 50 {
+					return io.EOF
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (r *Repo) pageIDAndTitle(rel, contentRoot string, cache map[string]string) (string, string) {
+	var id string
+	if strings.HasSuffix(rel, "/_index.md") {
+		id = strings.TrimSuffix(rel, "/_index.md")
+	} else {
+		id = strings.TrimSuffix(rel, ".md")
+	}
+	if t, ok := cache[id]; ok {
+		return id, t
+	}
+	abs := filepath.Join(contentRoot, filepath.FromSlash(rel))
+	title := id
+	if data, err := os.ReadFile(abs); err == nil {
+		if doc, err := ParsePage(data); err == nil {
+			if fmTitle, ok := doc.FrontMatter["title"].(string); ok && fmTitle != "" {
+				title = fmTitle
+			}
+		}
+	}
+	cache[id] = title
+	return id, title
+}
+
+// UpdateTitle changes the page title front matter without renaming the file.
+// Cleaner than RenamePage — keeps ids stable, links don't break.
+func (r *Repo) UpdateTitle(ctx context.Context, id, newTitle string, u *auth.User) (string, error) {
+	if newTitle == "" {
+		return "", ErrBadPath
+	}
+	pc, _, err := r.ReadPage(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	doc := &PageDoc{FrontMatter: pc.RawMeta, Body: pc.Body}
+	doc.FrontMatter["title"] = newTitle
+	return r.SavePage(ctx, id, doc, pc.BaseSHA, "wiki: rename "+newTitle, u)
+}
+
+
+// ListAssets returns filenames under <page>/assets/.
+func (r *Repo) ListAssets(ctx context.Context, pageID string) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	abs, err := r.resolvePath(filepath.Join(pageID, "assets"))
+	if err != nil { return nil, err }
+	ents, err := os.ReadDir(abs)
+	if err != nil {
+		if os.IsNotExist(err) { return []string{}, nil }
+		return nil, err
+	}
+	out := []string{}
+	for _, e := range ents {
+		if !e.IsDir() {
+			out = append(out, e.Name())
+		}
+	}
+	return out, nil
+}
+
+// ReadAsset streams a single asset. Name is the raw filename inside <page>/assets/.
+func (r *Repo) ReadAsset(ctx context.Context, pageID, name string) ([]byte, string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if strings.Contains(name, "/") || strings.Contains(name, "..") {
+		return nil, "", ErrBadPath
+	}
+	abs, err := r.resolvePath(filepath.Join(pageID, "assets", name))
+	if err != nil { return nil, "", err }
+	data, err := os.ReadFile(abs)
+	if err != nil { return nil, "", err }
+	mime := http.DetectContentType(data)
+	return data, mime, nil
 }

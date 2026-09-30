@@ -46,20 +46,20 @@ export function Sidebar() {
   const peers = useStore(s => s.peers);
 
   return (
-    <aside className="w-64 flex flex-col shrink-0 bg-stone-950 text-stone-300">
+    <aside className="w-64 flex flex-col shrink-0 bg-stone-100/70 text-stone-700 border-r border-stone-200/60">
       {/* Logo row */}
-      <div className="h-12 flex items-center px-4 border-b border-stone-800/60">
-        <div className="flex items-center gap-2 font-semibold text-white text-sm">
+      <div className="h-12 flex items-center px-4 border-b border-stone-200/60">
+        <div className="flex items-center gap-2 font-semibold text-stone-900 text-sm">
           <BookOpen className="size-4 text-emerald-400" />
           gitwiki
         </div>
         <div className="text-stone-700 mx-2">/</div>
         <select
-          className="flex-1 text-sm bg-transparent text-stone-300 focus:outline-none cursor-pointer truncate hover:text-white transition"
+          className="flex-1 text-sm bg-transparent text-stone-700 focus:outline-none cursor-pointer truncate hover:text-stone-900 transition"
           value={currentRepo ?? ""}
           onChange={(e) => setCurrentRepo(e.target.value)}
         >
-          {repos.map(r => <option key={r.slug} value={r.slug} className="bg-stone-900">{r.title}</option>)}
+          {repos.map(r => <option key={r.slug} value={r.slug} className="bg-white text-stone-900">{r.title}</option>)}
         </select>
       </div>
 
@@ -85,7 +85,7 @@ export function Sidebar() {
       </div>
 
       {/* Bottom: presence + user */}
-      <div className="border-t border-stone-800/60 px-4 py-3 space-y-2">
+      <div className="border-t border-stone-200/60 px-4 py-3 space-y-2">
         {peers.length > 1 && (
           <div className="flex items-center gap-2">
             <div className="flex -space-x-1">
@@ -93,7 +93,7 @@ export function Sidebar() {
                 <div
                   key={p.user}
                   title={p.name || p.user}
-                  className="size-5 rounded-full text-white flex items-center justify-center text-[8px] font-semibold ring-2 ring-stone-950"
+                  className="size-5 rounded-full text-white flex items-center justify-center text-[8px] font-semibold ring-2 ring-stone-100"
                   style={{ background: colorForUser(p.user) }}
                 >
                   {(p.name || p.user).slice(0,1).toUpperCase()}
@@ -105,8 +105,8 @@ export function Sidebar() {
         )}
         <div className="flex items-center gap-2 min-w-0">
           {user && <Avatar login={user.login} size={6} />}
-          <span className="text-xs text-stone-400 truncate flex-1">@{user?.login}</span>
-          <a href="/logout" title="登出" className="text-stone-500 hover:text-stone-200 transition">
+          <span className="text-xs text-stone-500 truncate flex-1">@{user?.login}</span>
+          <a href="/logout" title="登出" className="text-stone-400 hover:text-stone-700 transition">
             <LogOut className="size-3.5" />
           </a>
         </div>
@@ -177,11 +177,9 @@ function TreeNode({ node, depth, currentId, onOpen, parentId, siblings, index }:
   };
 
   const onRename = async () => {
-    if (!currentRepo || renameValue === node.title) { setRenaming(false); return; }
-    const parent = node.id.includes("/") ? node.id.slice(0, node.id.lastIndexOf("/")) : "";
-    const newId = parent ? `${parent}/${renameValue}` : renameValue;
+    if (!currentRepo || !renameValue.trim() || renameValue === node.title) { setRenaming(false); return; }
     try {
-      await api.renamePage(currentRepo, node.id, newId);
+      await api.retitlePage(currentRepo, node.id, renameValue.trim());
       const tree = await api.pageTree(currentRepo);
       useStore.getState().setTree(tree);
       toast.success("已重命名");
@@ -211,8 +209,8 @@ function TreeNode({ node, depth, currentId, onOpen, parentId, siblings, index }:
         className={
           "group relative flex items-center gap-1.5 rounded-md px-2 py-1 cursor-pointer select-none text-[13px] transition-colors " +
           (active
-            ? "bg-stone-800 text-white font-medium"
-            : "text-stone-400 hover:bg-stone-900 hover:text-stone-200")
+            ? "bg-white text-stone-900 font-medium shadow-sm ring-1 ring-stone-200/80"
+            : "text-stone-600 hover:bg-stone-200/70 hover:text-stone-900")
         }
         style={{ paddingLeft: `${depth * 14 + 8}px` }}
         onClick={() => node.has_body ? onOpen(node) : setOpen(o => !o)}
@@ -221,7 +219,7 @@ function TreeNode({ node, depth, currentId, onOpen, parentId, siblings, index }:
         {node.is_dir && (
           <button
             onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
-            className="shrink-0 -ml-1 p-0.5 text-stone-600 hover:text-stone-300"
+            className="shrink-0 -ml-1 p-0.5 text-stone-400 hover:text-stone-700"
           >
             {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
           </button>
@@ -229,11 +227,11 @@ function TreeNode({ node, depth, currentId, onOpen, parentId, siblings, index }:
         {!node.is_dir && <span className="w-4 shrink-0" />}
         {node.is_dir
           ? (open ? <FolderOpen className="size-3.5 text-amber-500/80 shrink-0" /> : <Folder className="size-3.5 text-amber-500/80 shrink-0" />)
-          : <FileText className="size-3.5 text-stone-600 shrink-0" />}
+          : <FileText className="size-3.5 text-stone-400 shrink-0" />}
         {renaming ? (
           <input
             autoFocus
-            className="flex-1 text-[13px] bg-stone-800 border border-emerald-500 rounded px-1.5 py-0.5 outline-none text-white"
+            className="flex-1 text-[13px] bg-white border border-emerald-500 rounded px-1.5 py-0.5 outline-none text-stone-900"
             value={renameValue}
             onChange={(e) => setRenameValue(e.target.value)}
             onClick={(e) => e.stopPropagation()}
@@ -248,17 +246,17 @@ function TreeNode({ node, depth, currentId, onOpen, parentId, siblings, index }:
           <span className="truncate flex-1">{node.title}</span>
         )}
         <span className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
-          <button title="上移" disabled={index === 0} className="p-1 rounded hover:bg-stone-700 text-stone-500 hover:text-stone-200 disabled:opacity-20" onClick={() => move(-1)}>
+          <button title="上移" disabled={index === 0} className="p-1 rounded hover:bg-stone-200 text-stone-500 hover:text-stone-800 disabled:opacity-20" onClick={() => move(-1)}>
             <ChevronUp className="size-3" />
           </button>
-          <button title="下移" disabled={index === siblings.length - 1} className="p-1 rounded hover:bg-stone-700 text-stone-500 hover:text-stone-200 disabled:opacity-20" onClick={() => move(1)}>
+          <button title="下移" disabled={index === siblings.length - 1} className="p-1 rounded hover:bg-stone-200 text-stone-500 hover:text-stone-800 disabled:opacity-20" onClick={() => move(1)}>
             <ChevronDownIcon className="size-3" />
           </button>
-          <button title="重命名" className="p-1 rounded hover:bg-stone-700 text-stone-500 hover:text-stone-200" onClick={() => setRenaming(true)}>
+          <button title="重命名" className="p-1 rounded hover:bg-stone-200 text-stone-500 hover:text-stone-800" onClick={() => setRenaming(true)}>
             <Pencil className="size-3" />
           </button>
           {node.is_dir && <NewPageButton parentId={node.id} />}
-          <button title="删除" className="p-1 rounded hover:bg-red-900/50 text-red-400 hover:text-red-300" onClick={onDelete}>
+          <button title="删除" className="p-1 rounded hover:bg-red-50 text-red-500 hover:text-red-700" onClick={onDelete}>
             <Trash2 className="size-3" />
           </button>
         </span>
@@ -273,52 +271,55 @@ function TreeNode({ node, depth, currentId, onOpen, parentId, siblings, index }:
 function NewPageButton({ parentId }: { parentId: string }) {
   const currentRepo = useStore(s => s.currentRepo);
   const [open, setOpen] = useState(false);
-  const [slug, setSlug] = useState("");
   const [title, setTitle] = useState("");
 
   useEffect(() => {
-    if (!open) { setSlug(""); setTitle(""); }
+    if (!open) setTitle("");
   }, [open]);
 
-  const canCreate = slug.trim() && title.trim();
+  const canCreate = !!title.trim();
+
+  const doCreate = async () => {
+    if (!currentRepo || !canCreate) return;
+    try {
+      const res = await api.createPage(currentRepo, { parent_id: parentId, title: title.trim() });
+      const tree = await api.pageTree(currentRepo);
+      useStore.getState().setTree(tree);
+      setOpen(false);
+      toast.success("已创建");
+      // Auto-open the new page
+      const pc = await api.readPage(currentRepo, res.id);
+      useStore.getState().openPage(pc.id, pc.base_sha, pc.is_bundle);
+    } catch (e: any) {
+      toast.error(`创建失败: ${e.message}`);
+    }
+  };
 
   return (
     <>
       <button
         onClick={(e) => { e.stopPropagation(); setOpen(true); }}
         title="新建页面"
-        className="p-1 rounded text-stone-500 hover:text-emerald-400 hover:bg-stone-800 transition"
+        className="p-1 rounded text-stone-500 hover:text-emerald-600 hover:bg-stone-200 transition"
       >
         <Plus className="size-3.5" />
       </button>
       {open && (
-        <div className="fixed inset-0 bg-black/50 z-20 flex items-start justify-center pt-32 backdrop-blur-sm" onClick={() => setOpen(false)}>
+        <div className="fixed inset-0 bg-black/40 z-20 flex items-start justify-center pt-32 backdrop-blur-sm" onClick={() => setOpen(false)}>
           <div className="bg-white rounded-xl w-96 shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
             <div className="px-5 pt-5 pb-3">
               <h3 className="font-semibold text-sm text-stone-900">新建页面</h3>
-              {parentId && <p className="text-xs text-stone-500 mt-0.5">位于 <code className="font-mono text-[11px] bg-stone-100 px-1 rounded">{parentId}</code> 下</p>}
+              {parentId && <p className="text-xs text-stone-500 mt-0.5">作为当前页面的子页面</p>}
             </div>
-            <div className="px-5 py-3 space-y-3 border-t border-stone-100">
-              <div>
-                <label className="text-xs font-medium text-stone-600 mb-1 block">标题</label>
-                <input
-                  className="w-full rounded-md border border-stone-200 px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-500 transition"
-                  placeholder="通俗易懂的名字"
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  autoFocus
-                />
-              </div>
-              <div>
-                <label className="text-xs font-medium text-stone-600 mb-1 block">URL slug</label>
-                <input
-                  className="w-full rounded-md border border-stone-200 px-3 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-500 transition"
-                  placeholder="getting-started"
-                  value={slug}
-                  onChange={(e) => setSlug(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter" && canCreate) document.getElementById("np-create")?.click(); }}
-                />
-              </div>
+            <div className="px-5 py-3 border-t border-stone-100">
+              <input
+                className="w-full rounded-md border border-stone-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-500 transition"
+                placeholder="页面标题"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") doCreate(); }}
+                autoFocus
+              />
             </div>
             <div className="px-5 py-3 bg-stone-50 border-t border-stone-100 flex justify-end gap-2">
               <button onClick={() => setOpen(false)} className="px-3 py-1.5 rounded-md text-sm text-stone-600 hover:bg-stone-100 transition">
@@ -328,18 +329,7 @@ function NewPageButton({ parentId }: { parentId: string }) {
                 id="np-create"
                 className="px-3 py-1.5 rounded-md bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
                 disabled={!canCreate}
-                onClick={async () => {
-                  if (!currentRepo) return;
-                  try {
-                    await api.createPage(currentRepo, { parent_id: parentId, slug: slug.trim(), title: title.trim() });
-                    const tree = await api.pageTree(currentRepo);
-                    useStore.getState().setTree(tree);
-                    setOpen(false);
-                    toast.success("已创建");
-                  } catch (e: any) {
-                    toast.error(`创建失败: ${e.message}`);
-                  }
-                }}
+                onClick={doCreate}
               >创建</button>
             </div>
           </div>

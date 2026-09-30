@@ -43,8 +43,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/repos/{slug}/page", s.savePage)
 	s.mux.HandleFunc("POST /api/repos/{slug}/page", s.createPage)
 	s.mux.HandleFunc("DELETE /api/repos/{slug}/page", s.deletePage)
-	s.mux.HandleFunc("PATCH /api/repos/{slug}/page", s.renamePage)
+	s.mux.HandleFunc("PATCH /api/repos/{slug}/page", s.retitlePage)
 	s.mux.HandleFunc("POST /api/repos/{slug}/order", s.reorderPages)
+	s.mux.HandleFunc("GET /api/repos/{slug}/search", s.searchPages)
+	s.mux.HandleFunc("GET /api/repos/{slug}/assets", s.listAssets)
+	s.mux.HandleFunc("GET /api/repos/{slug}/asset", s.readAsset)
 	s.mux.HandleFunc("POST /api/repos/{slug}/assets", s.uploadAsset)
 
 	s.mux.Handle("GET /ws", s.present)
@@ -231,7 +234,6 @@ func (s *Server) savePage(w http.ResponseWriter, r *http.Request) {
 
 type createReq struct {
 	ParentID string `json:"parent_id"`
-	Slug     string `json:"slug"`
 	Title    string `json:"title"`
 }
 
@@ -250,11 +252,11 @@ func (s *Server) createPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	if req.Slug == "" {
-		http.Error(w, "slug required", http.StatusBadRequest)
+	if req.Title == "" {
+		http.Error(w, "title required", http.StatusBadRequest)
 		return
 	}
-	id, err := rr.CreatePage(r.Context(), req.ParentID, req.Slug, req.Title, u)
+	id, err := rr.CreatePage(r.Context(), req.ParentID, req.Title, u)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -334,28 +336,29 @@ func (s *Server) deletePage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "deleted"})
 }
 
-type renameReq struct {
-	OldID string `json:"old_id"`
-	NewID string `json:"new_id"`
+type retitleReq struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
 }
 
-func (s *Server) renamePage(w http.ResponseWriter, r *http.Request) {
+func (s *Server) retitlePage(w http.ResponseWriter, r *http.Request) {
 	u := s.auth.CurrentUser(r)
 	if u == nil { http.Error(w, "unauthorized", http.StatusUnauthorized); return }
 	slug, rr, ok := s.repoFor(w, r)
 	if !ok { return }
-	var req renameReq
+	var req retitleReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest); return
 	}
-	if req.OldID == "" || req.NewID == "" {
-		http.Error(w, "old_id and new_id required", http.StatusBadRequest); return
+	if req.ID == "" || req.Title == "" {
+		http.Error(w, "id and title required", http.StatusBadRequest); return
 	}
-	if err := rr.RenamePage(r.Context(), req.OldID, req.NewID, u); err != nil {
+	sha, err := rr.UpdateTitle(r.Context(), req.ID, req.Title, u)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError); return
 	}
-	s.present.BroadcastSaved(slug, req.OldID, "", u.Login)
-	writeJSON(w, map[string]string{"status": "renamed", "id": req.NewID})
+	s.present.BroadcastSaved(slug, req.ID, sha, u.Login)
+	writeJSON(w, map[string]string{"status": "renamed", "id": req.ID, "commit_sha": sha})
 }
 
 type reorderReq struct {
@@ -376,6 +379,65 @@ func (s *Server) reorderPages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError); return
 	}
 	writeJSON(w, map[string]string{"status": "reordered"})
+}
+
+func (s *Server) searchPages(w http.ResponseWriter, r *http.Request) {
+	if s.auth.CurrentUser(r) == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	_, rr, ok := s.repoFor(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeJSON(w, []any{})
+		return
+	}
+	result, err := rr.Search(r.Context(), q)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, result)
+}
+
+// listAssets returns files under the page's assets dir.
+func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
+	if s.auth.CurrentUser(r) == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	_, rr, ok := s.repoFor(w, r)
+	if !ok { return }
+	pageID := r.URL.Query().Get("page_id")
+	if pageID == "" { http.Error(w, "page_id required", http.StatusBadRequest); return }
+	list, err := rr.ListAssets(r.Context(), pageID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError); return
+	}
+	writeJSON(w, list)
+}
+
+// readAsset serves a single asset file. Path is "<page_id>/assets/<filename>".
+func (s *Server) readAsset(w http.ResponseWriter, r *http.Request) {
+	if s.auth.CurrentUser(r) == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	_, rr, ok := s.repoFor(w, r)
+	if !ok { return }
+	pageID := r.URL.Query().Get("page_id")
+	name := r.URL.Query().Get("name")
+	if pageID == "" || name == "" { http.Error(w, "page_id and name required", http.StatusBadRequest); return }
+	data, mime, err := rr.ReadAsset(r.Context(), pageID, name)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound); return
+	}
+	w.Header().Set("Content-Type", mime)
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.Write(data)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

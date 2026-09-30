@@ -1,10 +1,11 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { api } from "./lib/api";
 import { useStore } from "./store";
 import { Sidebar } from "./components/Sidebar";
 import { Editor } from "./components/Editor";
 import { TopBar } from "./components/TopBar";
 import { Toaster } from "sonner";
+import { SearchModal } from "./components/SearchModal";
 
 export function App() {
   const setUser = useStore(s => s.setUser);
@@ -51,8 +52,24 @@ export function App() {
         </main>
       </div>
       <Toaster richColors position="top-right" />
+      <SearchHost />
     </div>
   );
+}
+
+function SearchHost() {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setOpen(o => !o);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  return open ? <SearchModal onClose={() => setOpen(false)} /> : null;
 }
 
 function EmptyState() {
