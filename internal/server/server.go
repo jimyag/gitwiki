@@ -44,6 +44,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/repos/{slug}/page", s.createPage)
 	s.mux.HandleFunc("DELETE /api/repos/{slug}/page", s.deletePage)
 	s.mux.HandleFunc("PATCH /api/repos/{slug}/page", s.renamePage)
+	s.mux.HandleFunc("POST /api/repos/{slug}/order", s.reorderPages)
 	s.mux.HandleFunc("POST /api/repos/{slug}/assets", s.uploadAsset)
 
 	s.mux.Handle("GET /ws", s.present)
@@ -355,6 +356,26 @@ func (s *Server) renamePage(w http.ResponseWriter, r *http.Request) {
 	}
 	s.present.BroadcastSaved(slug, req.OldID, "", u.Login)
 	writeJSON(w, map[string]string{"status": "renamed", "id": req.NewID})
+}
+
+type reorderReq struct {
+	ParentID string   `json:"parent_id"`
+	Ordered  []string `json:"ordered_ids"`
+}
+
+func (s *Server) reorderPages(w http.ResponseWriter, r *http.Request) {
+	u := s.auth.CurrentUser(r)
+	if u == nil { http.Error(w, "unauthorized", http.StatusUnauthorized); return }
+	_, rr, ok := s.repoFor(w, r)
+	if !ok { return }
+	var req reorderReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest); return
+	}
+	if err := rr.OrderChildren(r.Context(), req.ParentID, req.Ordered, u); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError); return
+	}
+	writeJSON(w, map[string]string{"status": "reordered"})
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

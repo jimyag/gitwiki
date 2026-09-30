@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useStore } from "../store";
 import { api, type PageMeta } from "../lib/api";
-import { FileText, Folder, FolderOpen, Plus, ChevronRight, ChevronDown, Trash2, Pencil } from "lucide-react";
+import { FileText, Folder, FolderOpen, Plus, ChevronRight, ChevronDown, ChevronUp, ChevronDown as ChevronDownIcon, Trash2, Pencil } from "lucide-react";
 import { toast } from "sonner";
 
 export function Sidebar() {
@@ -38,15 +38,65 @@ export function Sidebar() {
 }
 
 function Tree({ node, currentId, onOpen }: { node: PageMeta; currentId: string | null; onOpen: (n: PageMeta) => void }) {
-  return <>{(node.children || []).map(c => <TreeNode key={c.id} node={c} depth={0} currentId={currentId} onOpen={onOpen} />)}</>;
+  return (
+    <TreeList siblings={node.children || []} parentId="" depth={0} currentId={currentId} onOpen={onOpen} />
+  );
 }
 
-function TreeNode({ node, depth, currentId, onOpen }: { node: PageMeta; depth: number; currentId: string | null; onOpen: (n: PageMeta) => void }) {
+function TreeList({ siblings, parentId, depth, currentId, onOpen }: {
+  siblings: PageMeta[];
+  parentId: string;
+  depth: number;
+  currentId: string | null;
+  onOpen: (n: PageMeta) => void;
+}) {
+  return (
+    <>
+      {siblings.map((c, i) => (
+        <TreeNode
+          key={c.id}
+          node={c}
+          depth={depth}
+          currentId={currentId}
+          onOpen={onOpen}
+          parentId={parentId}
+          siblings={siblings}
+          index={i}
+        />
+      ))}
+    </>
+  );
+}
+
+function TreeNode({ node, depth, currentId, onOpen, parentId, siblings, index }: {
+  node: PageMeta;
+  depth: number;
+  currentId: string | null;
+  onOpen: (n: PageMeta) => void;
+  parentId: string;
+  siblings: PageMeta[];
+  index: number;
+}) {
   const [open, setOpen] = useState(depth < 2);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(node.title);
   const currentRepo = useStore(s => s.currentRepo);
   const active = currentId === node.id;
+
+  const move = async (dir: -1 | 1) => {
+    if (!currentRepo) return;
+    const j = index + dir;
+    if (j < 0 || j >= siblings.length) return;
+    const next = [...siblings];
+    [next[index], next[j]] = [next[j], next[index]];
+    try {
+      await api.reorderPages(currentRepo, parentId, next.map(x => x.id));
+      const tree = await api.pageTree(currentRepo);
+      useStore.getState().setTree(tree);
+    } catch (e: any) {
+      toast.error(`排序失败: ${e.message}`);
+    }
+  };
 
   const onRename = async () => {
     if (!currentRepo || renameValue === node.title) { setRenaming(false); return; }
@@ -120,6 +170,12 @@ function TreeNode({ node, depth, currentId, onOpen }: { node: PageMeta; depth: n
           <span className="truncate flex-1">{node.title}</span>
         )}
         <span className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+          <button title="上移" disabled={index === 0} className="p-1 rounded hover:bg-neutral-300/60 text-neutral-500 disabled:opacity-30" onClick={() => move(-1)}>
+            <ChevronUp className="size-3" />
+          </button>
+          <button title="下移" disabled={index === siblings.length - 1} className="p-1 rounded hover:bg-neutral-300/60 text-neutral-500 disabled:opacity-30" onClick={() => move(1)}>
+            <ChevronDownIcon className="size-3" />
+          </button>
           <button title="重命名" className="p-1 rounded hover:bg-neutral-300/60 text-neutral-500" onClick={() => setRenaming(true)}>
             <Pencil className="size-3" />
           </button>
@@ -129,7 +185,9 @@ function TreeNode({ node, depth, currentId, onOpen }: { node: PageMeta; depth: n
           </button>
         </span>
       </div>
-      {open && node.is_dir && (node.children || []).map(c => <TreeNode key={c.id} node={c} depth={depth + 1} currentId={currentId} onOpen={onOpen} />)}
+      {open && node.is_dir && (
+        <TreeList siblings={node.children || []} parentId={node.id} depth={depth + 1} currentId={currentId} onOpen={onOpen} />
+      )}
     </div>
   );
 }

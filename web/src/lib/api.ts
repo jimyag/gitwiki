@@ -57,6 +57,8 @@ export const api = {
     req<{ id: string }>(`/api/repos/${slug}/page`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(p) }),
   deletePage: (slug: string, id: string) =>
     req<{ status: string }>(`/api/repos/${slug}/page?id=${encodeURIComponent(id)}`, { method: "DELETE" }),
+  reorderPages: (slug: string, parentId: string, orderedIds: string[]) =>
+    req<{ status: string }>(`/api/repos/${slug}/order`, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ parent_id: parentId, ordered_ids: orderedIds }) }),
   renamePage: (slug: string, oldId: string, newId: string) =>
     req<{ id: string }>(`/api/repos/${slug}/page`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ old_id: oldId, new_id: newId }) }),
   uploadAsset: async (slug: string, pageId: string, file: File): Promise<AssetUpload> => {
