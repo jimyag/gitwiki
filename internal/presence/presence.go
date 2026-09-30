@@ -103,13 +103,14 @@ var palette = []string{
 	"#0ea5e9", "#8b5cf6", "#f59e0b", "#10b981", "#ef4444", "#ec4899", "#14b8a6", "#f97316",
 }
 
+// colorFor returns a stable color per user login (same client-side algorithm
+// as Sidebar.colorForUser). Does not need Hub state; kept as method for API shape.
 func (h *Hub) colorFor(user string) string {
-	if c, ok := h.colors[user]; ok {
-		return c
+	var hash uint32
+	for i := 0; i < len(user); i++ {
+		hash = (hash*31 + uint32(user[i])) & 0xffffffff
 	}
-	c := palette[len(h.colors)%len(palette)]
-	h.colors[user] = c
-	return c
+	return palette[int(hash)%len(palette)]
 }
 
 func snapshotLocked(room map[*client]bool) []Peer {

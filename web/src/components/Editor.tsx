@@ -5,13 +5,13 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirro
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
 import { githubLight } from "@uiw/codemirror-theme-github";
-import { remoteCursorsExtension } from "./editor/cursorOverlay";
 import { useStore } from "../store";
 import { api, type ConflictResult } from "../lib/api";
 import { connectPresence, disconnectPresence } from "../lib/ws";
 import { toast } from "sonner";
-import { Save, RefreshCw, X } from "lucide-react";
+import { X } from "lucide-react";
 import { DiffView } from "./editor/DiffView";
+import { remoteCursorsExtension } from "./editor/cursorOverlay";
 
 interface LoadedPage {
   title: string;
@@ -31,7 +31,6 @@ export function Editor() {
   const markDirty = useStore(s => s.markDirty);
   const bumpBaseSha = useStore(s => s.bumpBaseSha);
   const closePage = useStore(s => s.closePage);
-  const saveStatus = useStore(s => s.saveStatus);
 
   const [conflict, setConflict] = useState<ConflictResult | null>(null);
   const [loaded, setLoaded] = useState<LoadedPage | null>(null);
@@ -106,7 +105,7 @@ export function Editor() {
           markdown({ base: markdownLanguage }),
           syntaxHighlighting(defaultHighlightStyle),
           githubLight,
-          placeholder("开始写正文,Markdown 语法支持"),
+          placeholder("开始写正文"),
           updateListener,
           pasteHandler,
           remoteCursorsExtension(),
@@ -145,7 +144,6 @@ export function Editor() {
         setSaveStatus("saved");
         setConflict(null);
         setTimeout(() => setSaveStatus("idle"), 1500);
-        // Refresh page metadata
         if (currentRepo && pageId) {
           const pc = await api.readPage(currentRepo, pageId);
           setLoaded(prev => prev ? { ...prev, last_author: pc.last_author, last_commit_at: pc.last_commit_at, last_commit_sha: pc.last_commit_sha } : null);
@@ -182,54 +180,48 @@ export function Editor() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="bg-white px-4 py-2 flex items-center gap-2 text-[13px]">
-        <div className="text-neutral-400 font-mono text-xs truncate max-w-xs">{pageId}</div>
-        <div className="flex-1" />
-        <button
-          onClick={() => void doSave()}
-          disabled={saveStatus === "saving"}
-          className="inline-flex items-center gap-1.5 rounded-md bg-neutral-900 text-white px-3.5 py-1.5 text-xs font-medium hover:bg-neutral-800 disabled:opacity-50 transition shadow-sm"
-        >
-          {saveStatus === "saving" ? <RefreshCw className="size-3 animate-spin" /> : <Save className="size-3" />}
-          保存
-        </button>
+      {/* Close button in top-right corner (mostly there for keyboard; visual weight is low) */}
+      <div className="absolute right-6 top-16 z-10">
         <button
           onClick={() => closePage()}
-          title="关闭"
-          className="inline-flex items-center rounded-md px-2 py-1.5 text-xs text-neutral-400 hover:text-neutral-700 hover:bg-neutral-100 transition"
+          title="关闭 (Cmd+W)"
+          className="p-1.5 rounded-md text-stone-300 hover:text-stone-600 hover:bg-stone-100 transition"
         >
           <X className="size-3.5" />
         </button>
       </div>
-      <div className="border-t border-neutral-100 px-10 pt-8 pb-4 max-w-3xl mx-auto w-full">
-        <input
-          value={titleInput}
-          onChange={(e) => {
-            setTitleInput(e.target.value);
-            markDirty(true);
-          }}
-          placeholder="未命名页面"
-          className="w-full text-[32px] font-bold tracking-tight outline-none placeholder:text-neutral-300 text-neutral-900 bg-transparent leading-tight"
-        />
-      </div>
+
       <div className="flex-1 overflow-auto">
-        <div className="max-w-3xl mx-auto w-full px-10 pb-10">
-          <div ref={ref} className="min-h-[40vh]" />
-        </div>
-      </div>
-      {loaded?.last_author && (
-        <div className="border-t border-neutral-100 bg-neutral-50/50 px-10 py-2 text-xs text-neutral-400 flex items-center gap-2.5">
-          <span>最后由 <span className="font-medium text-neutral-600">{loaded.last_author}</span> 提交</span>
-          <span className="text-neutral-300">·</span>
-          <span>{formatRelativeTime(loaded.last_commit_at)}</span>
-          {loaded.last_commit_sha && (
-            <>
-              <span className="text-neutral-300">·</span>
-              <code className="font-mono text-[11px] text-neutral-400">{loaded.last_commit_sha.slice(0, 7)}</code>
-            </>
+        <article className="max-w-[720px] mx-auto px-10 pt-12 pb-24">
+          {/* Title */}
+          <input
+            value={titleInput}
+            onChange={(e) => {
+              setTitleInput(e.target.value);
+              markDirty(true);
+            }}
+            placeholder="未命名页面"
+            className="w-full text-[38px] font-bold tracking-tight outline-none placeholder:text-stone-300 text-stone-900 bg-transparent leading-[1.2] mb-6 pb-4 border-b border-transparent focus:border-stone-100 transition"
+            style={{ fontFamily: '"Source Serif 4", Georgia, "Songti SC", serif' }}
+          />
+          {/* Body */}
+          <div ref={ref} className="editor-body min-h-[50vh]" />
+          {/* Footer meta */}
+          {loaded?.last_author && (
+            <div className="mt-12 pt-4 border-t border-stone-100 text-xs text-stone-400 flex items-center gap-2">
+              <span>最后由 <span className="font-medium text-stone-600">{loaded.last_author}</span> 编辑</span>
+              <span className="text-stone-300">·</span>
+              <span>{formatRelativeTime(loaded.last_commit_at)}</span>
+              {loaded.last_commit_sha && (
+                <>
+                  <span className="text-stone-300">·</span>
+                  <code className="font-mono text-[11px] text-stone-400 bg-stone-50 px-1.5 py-0.5 rounded">{loaded.last_commit_sha.slice(0, 7)}</code>
+                </>
+              )}
+            </div>
           )}
-        </div>
-      )}
+        </article>
+      </div>
     </div>
   );
 }
