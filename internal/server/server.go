@@ -151,16 +151,21 @@ func (s *Server) readPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{
-		"id":        id,
-		"content":   f.Content,
-		"base_sha":  f.BaseSHA,
-		"is_bundle": isBundle,
+		"id":              id,
+		"title":           f.Title,
+		"body":            f.Body,
+		"base_sha":        f.BaseSHA,
+		"is_bundle":       isBundle,
+		"last_author":     f.LastAuthor,
+		"last_commit_sha": f.LastCommitSHA,
+		"last_commit_at":  f.LastCommitAt,
 	})
 }
 
 type saveReq struct {
 	ID      string `json:"id"`
-	Content string `json:"content"`
+	Title   string `json:"title"`
+	Body    string `json:"body"`
 	BaseSHA string `json:"base_sha"`
 	Message string `json:"message"`
 }
@@ -184,7 +189,23 @@ func (s *Server) savePage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "id required", http.StatusBadRequest)
 		return
 	}
-	sha, err := rr.SavePage(r.Context(), req.ID, req.Content, req.BaseSHA, req.Message, u)
+	// Read existing page to preserve unknown front matter fields. New pages without
+	// front matter get a fresh map; we then only set title.
+	existing, _, rerr := rr.ReadPage(r.Context(), req.ID)
+	var doc *gitstore.PageDoc
+	if rerr == nil {
+		doc = &gitstore.PageDoc{FrontMatter: existing.RawMeta, Body: req.Body}
+	} else if errors.Is(rerr, gitstore.ErrNotFound) {
+		doc = &gitstore.PageDoc{FrontMatter: map[string]any{}, Body: req.Body}
+	} else {
+		http.Error(w, rerr.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Title is always overwritable from the UI.
+	if req.Title != "" {
+		doc.FrontMatter["title"] = req.Title
+	}
+	sha, err := rr.SavePage(r.Context(), req.ID, doc, req.BaseSHA, req.Message, u)
 	if err != nil {
 		var ce *gitstore.ConflictError
 		if errors.As(err, &ce) {

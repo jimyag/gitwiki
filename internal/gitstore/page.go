@@ -151,8 +151,8 @@ func sortTree(p *Page) {
 	}
 }
 
-// ReadPage returns the markdown body and base SHA for a page id.
-func (r *Repo) ReadPage(ctx context.Context, id string) (*File, bool, error) {
+// ReadPage returns the page's content split into front matter / body, plus base SHA.
+func (r *Repo) ReadPage(ctx context.Context, id string) (*PageContent, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	abs, isBundle, err := r.diskPath(id)
@@ -167,13 +167,47 @@ func (r *Repo) ReadPage(ctx context.Context, id string) (*File, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	return &File{Path: id, Content: string(data), BaseSHA: head}, isBundle, nil
+	doc, err := ParsePage(data)
+	if err != nil {
+		return nil, false, err
+	}
+	title, _ := doc.FrontMatter["title"].(string)
+	pc := &PageContent{
+		ID:      id,
+		Title:   title,
+		Body:    doc.Body,
+		RawMeta: doc.FrontMatter,
+		BaseSHA: head,
+	}
+	// Best-effort: last commit touching this file.
+	gitPath := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, relToMd(id, isBundle)))
+	if out, err := r.gitOut(ctx, "log", "-1", "--format=%an%x1f%H%x1f%cI", "--", gitPath); err == nil {
+		line := strings.TrimSpace(string(out))
+		parts := strings.SplitN(line, "\x1f", 3)
+		if len(parts) == 3 {
+			pc.LastAuthor = parts[0]
+			pc.LastCommitSHA = parts[1]
+			pc.LastCommitAt = parts[2]
+		}
+	}
+	return pc, isBundle, nil
+}
+
+type PageContent struct {
+	ID            string
+	Title         string
+	Body          string
+	RawMeta       map[string]any // server-side canonical front matter; UI does not see this
+	BaseSHA       string
+	LastAuthor    string
+	LastCommitSHA string
+	LastCommitAt  string // RFC3339
 }
 
 // SavePage saves the page body, migrating leaf↔bundle as needed.
 // `hasChildren` indicates whether the page needs bundle form after save.
 // We don't know future children so this just chooses based on what exists on disk.
-func (r *Repo) SavePage(ctx context.Context, id, content, baseSHA, message string, u *auth.User) (string, error) {
+func (r *Repo) SavePage(ctx context.Context, id string, doc *PageDoc, baseSHA, message string, u *auth.User) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	abs, isBundle, err := r.diskPath(id)
@@ -204,15 +238,20 @@ func (r *Repo) SavePage(ctx context.Context, id, content, baseSHA, message strin
 		return "", err
 	}
 
+	// Serialize the page once so that conflict text and final write use identical bytes.
+	contentBytes, err := RenderPage(doc)
+	if err != nil {
+		return "", err
+	}
 	if localHead != baseSHA {
-		merged, conflict, err := r.merge3(ctx, relToMd(id, isBundle), baseSHA, localHead, content)
+		merged, conflict, err := r.merge3(ctx, relToMd(id, isBundle), baseSHA, localHead, string(contentBytes))
 		if err != nil {
 			return "", err
 		}
 		if conflict {
 			return "", &ConflictError{Path: id, Merged: merged, CurrentSHA: localHead}
 		}
-		content = merged
+		contentBytes = []byte(merged)
 		if err := r.git(ctx, "merge", "--ff-only", "origin/"+r.cfg.Branch); err != nil {
 			return "", fmt.Errorf("ff: %w", err)
 		}
@@ -221,7 +260,7 @@ func (r *Repo) SavePage(ctx context.Context, id, content, baseSHA, message strin
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(abs, contentBytes, 0o644); err != nil {
 		return "", err
 	}
 	gitPath := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, relToMd(id, isBundle)))
@@ -273,9 +312,11 @@ func (r *Repo) CreatePage(ctx context.Context, parentID, slug, title string, u *
 	if parentID != "" {
 		id = parentID + "/" + slug
 	}
-	body := fmt.Sprintf("---\ntitle: %q\n---\n\n", title)
-	// SavePage handles leaf vs bundle choice.
-	sha, err := r.SavePage(ctx, id, body, "", "wiki: new page "+id, u)
+	doc := &PageDoc{
+		FrontMatter: map[string]any{"title": title},
+		Body:        "",
+	}
+	sha, err := r.SavePage(ctx, id, doc, "", "wiki: new page "+id, u)
 	if err != nil {
 		return "", err
 	}

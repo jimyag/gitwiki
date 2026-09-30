@@ -20,7 +20,8 @@ export interface PageMeta {
   id: string; title: string; is_dir: boolean; has_body: boolean; children?: PageMeta[]
 }
 export interface PageContent {
-  id: string; content: string; base_sha: string; is_bundle: boolean;
+  id: string; title: string; body: string; base_sha: string; is_bundle: boolean;
+  last_author?: string; last_commit_sha?: string; last_commit_at?: string;
 }
 export interface SaveResult { commit_sha: string }
 export interface ConflictResult {
@@ -35,7 +36,7 @@ export const api = {
   pageTree: (slug: string) => req<PageMeta>(`/api/repos/${slug}/pages`),
   readPage: (slug: string, id: string) =>
     req<PageContent>(`/api/repos/${slug}/page?id=${encodeURIComponent(id)}`),
-  savePage: async (slug: string, p: { id: string; content: string; base_sha: string; message?: string }) => {
+  savePage: async (slug: string, p: { id: string; title: string; body: string; base_sha: string; message?: string }) => {
     const r = await fetch(`/api/repos/${slug}/page`, {
       method: "PUT", headers: jsonHeaders, body: JSON.stringify(p),
     });
