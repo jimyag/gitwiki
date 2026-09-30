@@ -256,29 +256,32 @@ function TreeNode({ node, depth, currentId, onOpen, parentId, siblings, index }:
         ) : (
           <span className="truncate flex-1">{node.title}</span>
         )}
-        <span className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
-          <button title="上移" disabled={index === 0} className="p-1 rounded hover:bg-stone-200 text-stone-500 hover:text-stone-800 disabled:opacity-20" onClick={() => move(-1)}>
-            <ChevronUp className="size-3" />
-          </button>
-          <button title="下移" disabled={index === siblings.length - 1} className="p-1 rounded hover:bg-stone-200 text-stone-500 hover:text-stone-800 disabled:opacity-20" onClick={() => move(1)}>
-            <ChevronDownIcon className="size-3" />
-          </button>
-          <button title="重命名" className="p-1 rounded hover:bg-stone-200 text-stone-500 hover:text-stone-800" onClick={() => setRenaming(true)}>
-            <Pencil className="size-3" />
-          </button>
-          {node.is_dir && <NewPageButton parentId={node.id} />}
-          <button
-            title={confirmDelete ? "再点一次确认删除" : "删除"}
-            className={
-              "p-1 rounded transition " +
-              (confirmDelete
-                ? "bg-red-500 text-white"
-                : "hover:bg-red-50 text-red-500 hover:text-red-700")
-            }
-            onClick={onDelete}
-          >
-            <Trash2 className="size-3" />
-          </button>
+        <span className="flex items-center gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+          {/* Always-visible "+" per row: works on leaf too; backend promotes leaf to bundle automatically. */}
+          <NewPageButton parentId={node.id} />
+          <span className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5">
+            <button title="上移" disabled={index === 0} className="p-1 rounded hover:bg-stone-200 text-stone-500 hover:text-stone-800 disabled:opacity-20" onClick={() => move(-1)}>
+              <ChevronUp className="size-3" />
+            </button>
+            <button title="下移" disabled={index === siblings.length - 1} className="p-1 rounded hover:bg-stone-200 text-stone-500 hover:text-stone-800 disabled:opacity-20" onClick={() => move(1)}>
+              <ChevronDownIcon className="size-3" />
+            </button>
+            <button title="重命名" className="p-1 rounded hover:bg-stone-200 text-stone-500 hover:text-stone-800" onClick={() => setRenaming(true)}>
+              <Pencil className="size-3" />
+            </button>
+            <button
+              title={confirmDelete ? "再点一次确认删除" : "删除"}
+              className={
+                "p-1 rounded transition " +
+                (confirmDelete
+                  ? "bg-red-500 text-white"
+                  : "hover:bg-red-50 text-red-500 hover:text-red-700")
+              }
+              onClick={onDelete}
+            >
+              <Trash2 className="size-3" />
+            </button>
+          </span>
         </span>
       </div>
       {open && node.is_dir && (

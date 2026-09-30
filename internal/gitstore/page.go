@@ -359,6 +359,29 @@ func (r *Repo) CreatePage(ctx context.Context, parentID, title string, u *auth.U
 	if id == "" {
 		return "", fmt.Errorf("could not allocate unique slug")
 	}
+	// If parentID refers to a leaf page, convert it to bundle first so it can host children.
+	if parentID != "" {
+		if _, isBundle, err := r.diskPath(parentID); err == nil && !isBundle {
+			// Promote uses no lock because we're already inside SavePage's lock scope via r.mu.
+			// But CreatePage is called at top-level without holding r.mu — see SavePage body.
+			// SavePage will take r.mu itself; we must not take it twice.
+			// PromoteToBundleHelper assumes no lock.
+			// Call a no-lock version: use the helper but dance around SavePage's lock via
+			// sneaky order: savePage will pick the on-disk layout after promotion, but to
+			// actually persist the rename we need to run git ops before calling SavePage.
+			// Simplest: do the promotion inline using exec.Command (same as PromoteToBundle body).
+			abs, _, derr := r.diskPath(parentID)
+			if derr == nil {
+				bundleAbs, _ := r.resolvePath(filepath.Join(parentID, "_index.md"))
+				os.MkdirAll(filepath.Dir(bundleAbs), 0o755)
+				os.Rename(abs, bundleAbs)
+				gitOld := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, parentID+".md"))
+				gitNew := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, parentID, "_index.md"))
+				// stage, will be committed by the upcoming SavePage commit
+				r.gitEnv(ctx, nil, "-C", r.cfg.Workdir, "add", "-A", "--", gitOld, gitNew)
+			}
+		}
+	}
 	doc := &PageDoc{
 		FrontMatter: map[string]any{"title": title},
 		Body:        "",
@@ -970,3 +993,5 @@ func (r *Repo) ReadAsset(ctx context.Context, pageID, name string) ([]byte, stri
 	mime := http.DetectContentType(data)
 	return data, mime, nil
 }
+
+
