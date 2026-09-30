@@ -249,14 +249,7 @@ func (r *Repo) Save(ctx context.Context, rel, content, baseSHA, message string, 
 	return sha, nil
 }
 
-type ConflictError struct {
-	Path       string
-	Merged     string // content with conflict markers
-	CurrentSHA string
-}
 
-func (e *ConflictError) Error() string { return "conflict in " + e.Path }
-func (e *ConflictError) Unwrap() error { return ErrConflict }
 
 // merge3 performs a 3-way merge using `git merge-file`. Returns merged text
 // and whether conflicts exist (text then still contains conflict markers).

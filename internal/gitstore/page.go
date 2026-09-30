@@ -249,7 +249,15 @@ func (r *Repo) SavePage(ctx context.Context, id string, doc *PageDoc, baseSHA, m
 			return "", err
 		}
 		if conflict {
-			return "", &ConflictError{Path: id, Merged: merged, CurrentSHA: localHead}
+			baseDoc, _ := r.readDocAt(ctx, relToMd(id, isBundle), baseSHA)
+			headDoc, _ := r.readDocAt(ctx, relToMd(id, isBundle), localHead)
+			var baseBody, theirsBody string
+			if baseDoc != nil { baseBody = baseDoc.Body }
+			if headDoc != nil { theirsBody = headDoc.Body }
+			return "", &ConflictError{
+				Path: id, Merged: merged, CurrentSHA: localHead,
+				TheirsBody: theirsBody, OursBody: doc.Body, BaseBody: baseBody,
+			}
 		}
 		contentBytes = []byte(merged)
 		if err := r.git(ctx, "merge", "--ff-only", "origin/"+r.cfg.Branch); err != nil {
@@ -579,3 +587,23 @@ func (r *Repo) RenamePage(ctx context.Context, oldID, newID string, u *auth.User
 	return nil
 }
 
+type ConflictError struct {
+	Path       string
+	Merged     string // content with conflict markers (whole file, including front matter)
+	CurrentSHA string
+	TheirsBody string // body at current HEAD (front matter stripped)
+	OursBody   string // body the user tried to save
+	BaseBody   string // body of the base version
+}
+
+func (e *ConflictError) Error() string { return "conflict in " + e.Path }
+func (e *ConflictError) Unwrap() error { return ErrConflict }
+
+// readDocAt reads the doc at the given sha. Best-effort; returns nil on missing.
+func (r *Repo) readDocAt(ctx context.Context, relMd string, sha string) (*PageDoc, error) {
+	out, err := r.gitOut(ctx, "show", sha+":"+filepath.ToSlash(filepath.Join(r.cfg.ContentDir, relMd)))
+	if err != nil {
+		return nil, err
+	}
+	return ParsePage(out)
+}

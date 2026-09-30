@@ -25,7 +25,12 @@ export interface PageContent {
 }
 export interface SaveResult { commit_sha: string }
 export interface ConflictResult {
-  conflict: true; merged: string; current_sha: string;
+  conflict: true;
+  merged: string;      // merged whole file (front matter + body, with conflict markers)
+  current_sha: string;
+  theirs_body: string; // body at current HEAD
+  ours_body: string;   // the body the user tried to save
+  base_body: string;   // body of the base version
 }
 
 export interface AssetUpload { path: string }

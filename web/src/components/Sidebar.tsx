@@ -11,16 +11,20 @@ export function Sidebar() {
   const openPage = useStore(s => s.openPage);
 
   if (!tree) {
-    return <aside className="w-64 border-r border-neutral-200 bg-neutral-50/50 p-3 text-xs text-neutral-500">加载中…</aside>;
+    return (
+      <aside className="w-64 bg-neutral-100 flex flex-col shrink-0">
+        <div className="px-4 py-3 text-xs text-neutral-400">加载页面…</div>
+      </aside>
+    );
   }
 
   return (
-    <aside className="w-64 border-r border-neutral-200 bg-neutral-50/50 flex flex-col shrink-0">
+    <aside className="w-64 flex flex-col shrink-0 bg-neutral-100">
       <div className="px-3 py-2 flex items-center justify-between">
-        <div className="text-xs font-medium text-neutral-500 uppercase tracking-wider">页面</div>
+        <div className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider">页面</div>
         <NewPageButton parentId="" />
       </div>
-      <div className="flex-1 overflow-auto px-1 pb-4">
+      <div className="flex-1 overflow-auto px-2 pb-4 space-y-px">
         <Tree node={tree} currentId={pageId} onOpen={(node) => {
           if (!currentRepo || !node.has_body) return;
           (async () => {
@@ -34,7 +38,7 @@ export function Sidebar() {
 }
 
 function Tree({ node, currentId, onOpen }: { node: PageMeta; currentId: string | null; onOpen: (n: PageMeta) => void }) {
-  return <div>{(node.children || []).map(c => <TreeNode key={c.id} node={c} depth={0} currentId={currentId} onOpen={onOpen} />)}</div>;
+  return <>{(node.children || []).map(c => <TreeNode key={c.id} node={c} depth={0} currentId={currentId} onOpen={onOpen} />)}</>;
 }
 
 function TreeNode({ node, depth, currentId, onOpen }: { node: PageMeta; depth: number; currentId: string | null; onOpen: (n: PageMeta) => void }) {
@@ -61,7 +65,7 @@ function TreeNode({ node, depth, currentId, onOpen }: { node: PageMeta; depth: n
 
   const onDelete = async () => {
     if (!currentRepo) return;
-    if (!confirm(`删除页面 ${node.id}?`)) return;
+    if (!confirm(`删除页面 "${node.title}"?`)) return;
     try {
       await api.deletePage(currentRepo, node.id);
       const tree = await api.pageTree(currentRepo);
@@ -77,29 +81,31 @@ function TreeNode({ node, depth, currentId, onOpen }: { node: PageMeta; depth: n
     <div>
       <div
         className={
-          "group flex items-center gap-1 rounded px-1.5 py-1 cursor-pointer select-none text-sm " +
-          (active ? "bg-sky-100 text-sky-900 font-medium" : "hover:bg-neutral-200/60")
+          "group relative flex items-center gap-1.5 rounded-md px-2 py-1.5 cursor-pointer select-none text-[13px] transition-colors " +
+          (active
+            ? "bg-white text-neutral-900 font-medium shadow-sm ring-1 ring-black/[0.04]"
+            : "text-neutral-600 hover:bg-neutral-200/50")
         }
-        style={{ paddingLeft: `${depth * 12 + 4}px` }}
+        style={{ paddingLeft: `${depth * 14 + 8}px` }}
         onClick={() => node.has_body ? onOpen(node) : setOpen(o => !o)}
         onDoubleClick={() => setRenaming(true)}
       >
         {node.is_dir && (
           <button
             onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
-            className="p-0.5 hover:bg-neutral-300/60 rounded"
+            className="shrink-0 -ml-1 p-0.5 text-neutral-400 hover:text-neutral-600"
           >
             {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
           </button>
         )}
-        {!node.is_dir && <span className="w-4" />}
+        {!node.is_dir && <span className="w-4 shrink-0" />}
         {node.is_dir
-          ? (open ? <FolderOpen className="size-3.5 text-amber-600 shrink-0" /> : <Folder className="size-3.5 text-amber-600 shrink-0" />)
+          ? (open ? <FolderOpen className="size-3.5 text-amber-500 shrink-0" /> : <Folder className="size-3.5 text-amber-500 shrink-0" />)
           : <FileText className="size-3.5 text-neutral-400 shrink-0" />}
         {renaming ? (
           <input
             autoFocus
-            className="flex-1 text-sm bg-white border border-sky-300 rounded px-1 outline-none"
+            className="flex-1 text-[13px] bg-white border border-sky-300 rounded px-1 outline-none"
             value={renameValue}
             onChange={(e) => setRenameValue(e.target.value)}
             onClick={(e) => e.stopPropagation()}
@@ -113,7 +119,7 @@ function TreeNode({ node, depth, currentId, onOpen }: { node: PageMeta; depth: n
         ) : (
           <span className="truncate flex-1">{node.title}</span>
         )}
-        <span className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
+        <span className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
           <button title="重命名" className="p-1 rounded hover:bg-neutral-300/60 text-neutral-500" onClick={() => setRenaming(true)}>
             <Pencil className="size-3" />
           </button>
@@ -138,31 +144,58 @@ function NewPageButton({ parentId }: { parentId: string }) {
     if (!open) { setSlug(""); setTitle(""); }
   }, [open]);
 
+  const canCreate = slug.trim() && title.trim();
+
   return (
     <>
       <button
         onClick={(e) => { e.stopPropagation(); setOpen(true); }}
         title="新建页面"
-        className="p-1 rounded hover:bg-neutral-300/60 text-neutral-500"
+        className="p-1 rounded hover:bg-neutral-200 text-neutral-500 hover:text-neutral-800"
       >
-        <Plus className="size-3" />
+        <Plus className="size-3.5" />
       </button>
       {open && (
-        <div className="fixed inset-0 bg-black/20 z-10 flex items-center justify-center" onClick={() => setOpen(false)}>
-          <div className="bg-white rounded-lg p-4 w-80 shadow-xl space-y-3" onClick={(e) => e.stopPropagation()}>
-            <h3 className="font-medium text-sm">新建页面{parentId ? `（在 ${parentId} 下）` : ""}</h3>
-            <input className="w-full border border-neutral-200 rounded px-2 py-1 text-sm" placeholder="URL slug（如 getting-started）" value={slug} onChange={(e) => setSlug(e.target.value)} autoFocus />
-            <input className="w-full border border-neutral-200 rounded px-2 py-1 text-sm" placeholder="标题" value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && slug && title) document.getElementById("np-create")?.click(); }} />
-            <div className="flex justify-end gap-2 text-sm">
-              <button onClick={() => setOpen(false)} className="px-3 py-1">取消</button>
+        <div className="fixed inset-0 bg-black/30 z-20 flex items-start justify-center pt-32" onClick={() => setOpen(false)}>
+          <div className="bg-white rounded-xl w-96 shadow-2xl ring-1 ring-black/5 overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 pt-5 pb-3 border-b border-neutral-100">
+              <h3 className="font-semibold text-sm text-neutral-900">新建页面</h3>
+              {parentId && <p className="text-xs text-neutral-400 mt-0.5">在 {parentId} 下</p>}
+            </div>
+            <div className="p-5 space-y-3">
+              <div>
+                <label className="text-xs font-medium text-neutral-500 mb-1 block">标题</label>
+                <input
+                  className="w-full rounded-md border border-neutral-200 px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-sky-500/40 focus:border-sky-400 transition"
+                  placeholder="通俗易懂的名字"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-neutral-500 mb-1 block">URL slug</label>
+                <input
+                  className="w-full rounded-md border border-neutral-200 px-3 py-1.5 text-sm font-mono outline-none focus:ring-2 focus:ring-sky-500/40 focus:border-sky-400 transition"
+                  placeholder="getting-started"
+                  value={slug}
+                  onChange={(e) => setSlug(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && canCreate) document.getElementById("np-create")?.click(); }}
+                />
+              </div>
+            </div>
+            <div className="px-5 pb-5 flex justify-end gap-2">
+              <button onClick={() => setOpen(false)} className="px-3 py-1.5 rounded-md text-sm text-neutral-600 hover:bg-neutral-100">
+                取消
+              </button>
               <button
                 id="np-create"
-                className="px-3 py-1 rounded bg-neutral-900 text-white disabled:opacity-50"
-                disabled={!slug || !title}
+                className="px-3 py-1.5 rounded-md bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800 disabled:opacity-40 disabled:cursor-not-allowed"
+                disabled={!canCreate}
                 onClick={async () => {
                   if (!currentRepo) return;
                   try {
-                    await api.createPage(currentRepo, { parent_id: parentId, slug, title });
+                    await api.createPage(currentRepo, { parent_id: parentId, slug: slug.trim(), title: title.trim() });
                     const tree = await api.pageTree(currentRepo);
                     useStore.getState().setTree(tree);
                     setOpen(false);

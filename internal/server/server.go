@@ -215,6 +215,9 @@ func (s *Server) savePage(w http.ResponseWriter, r *http.Request) {
 				"conflict":    true,
 				"merged":      ce.Merged,
 				"current_sha": ce.CurrentSHA,
+				"theirs_body": ce.TheirsBody,
+				"ours_body":   ce.OursBody,
+				"base_body":   ce.BaseBody,
 			})
 			return
 		}

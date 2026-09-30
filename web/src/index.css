@@ -1,9 +1,46 @@
 @import "tailwindcss";
 
+@theme inline {
+  --font-sans: "Inter", -apple-system, "PingFang SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
 :root { --radius: 0.5rem; }
 
-body { @apply bg-neutral-50 text-neutral-900 antialiased; }
+html, body, #root { height: 100%; }
+body {
+  @apply bg-neutral-100 text-neutral-800 antialiased;
+  font-family: var(--font-sans);
+}
 
-/* CodeMirror base sizing */
-.cm-editor { @apply h-full text-sm; }
-.cm-scroller { @apply font-mono; }
+/* CodeMirror base sizing — Notion-like typography */
+.cm-editor {
+  @apply h-full text-[15px] leading-[1.75] bg-transparent;
+  font-family: var(--font-sans);
+}
+.cm-editor.cm-focused { outline: none; }
+.cm-scroller { font-family: var(--font-sans); }
+.cm-content { @apply caret-neutral-800; padding: 0; }
+.cm-line { @apply px-0; }
+.cm-gutters { @apply bg-transparent border-none text-neutral-300 pr-6 pl-0; }
+.cm-lineNumbers .cm-gutterElement { @apply text-[11px] text-neutral-300 min-w-8 text-right; }
+
+/* Markdown syntax coloring */
+.cm-line .ͼ5 { @apply text-neutral-400; } /* punctuation: #, * etc */
+.cm-line .ͼ6 { @apply text-sky-700 font-semibold; } /* headings text */
+.cm-line .ͼ7 { @apply text-violet-700; } /* bold */
+.cm-line .ͼ8 { @apply text-amber-700 italic; } /* italic */
+.cm-line .ͼ9 { @apply text-neutral-400; }
+.cm-line .ͼa { @apply text-sky-600 underline decoration-sky-300; } /* links */
+.cm-line .ͼb { @apply text-emerald-700 bg-emerald-50 rounded px-0.5; } /* code inline */
+
+/* Diff colors (for conflict view) */
+.diff-add { @apply bg-emerald-50 text-emerald-900; }
+.diff-del { @apply bg-red-50 text-red-900 line-through opacity-70; }
+.diff-ctx { @apply text-neutral-500; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.2); }
