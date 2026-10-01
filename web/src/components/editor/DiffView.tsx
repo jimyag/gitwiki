@@ -18,9 +18,9 @@ export function DiffView({ theirsBody, oursBody, mergedWholeText, onApplyMergedB
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-white">
-      <div className="border-b border-neutral-200 bg-amber-50/50 px-4 py-2.5 flex items-center gap-3">
+      <div className="border-b border-stone-200 bg-amber-50/50 px-4 py-2.5 flex items-center gap-3">
         <div className="text-xs font-medium text-amber-900">该页面被他人更新，存在冲突</div>
-        <div className="flex items-center gap-0.5 bg-white rounded-md p-0.5 border border-neutral-200">
+        <div className="flex items-center gap-0.5 bg-white rounded-md p-0.5 border border-stone-200">
           <Tab active={tab === "side"} onClick={() => setTab("side")}>并排对比</Tab>
           <Tab active={tab === "merged"} onClick={() => setTab("merged")}>自动合并结果</Tab>
         </div>
@@ -31,14 +31,14 @@ export function DiffView({ theirsBody, oursBody, mergedWholeText, onApplyMergedB
         >
           以合并结果继续编辑 <ArrowRight className="size-3" />
         </button>
-        <button onClick={onDismiss} className="p-1 rounded text-neutral-400 hover:text-neutral-600 hover:bg-neutral-100">
+        <button onClick={onDismiss} className="p-1 rounded text-stone-400 hover:text-stone-600 hover:bg-stone-100">
           <X className="size-4" />
         </button>
       </div>
       {tab === "side" ? (
         <SideBySide theirs={theirsBody} ours={oursBody} />
       ) : (
-        <pre className="flex-1 overflow-auto p-4 text-xs font-mono bg-neutral-50 text-neutral-800 whitespace-pre-wrap">{mergedBody}</pre>
+        <pre className="flex-1 overflow-auto p-4 text-xs font-mono bg-stone-50 text-stone-800 whitespace-pre-wrap">{mergedBody}</pre>
       )}
     </div>
   );
@@ -50,7 +50,7 @@ function Tab({ active, onClick, children }: { active: boolean; onClick: () => vo
       onClick={onClick}
       className={
         "px-2.5 py-1 rounded text-xs font-medium transition " +
-        (active ? "bg-neutral-900 text-white" : "text-neutral-600 hover:bg-neutral-100")
+        (active ? "bg-stone-900 text-white" : "text-stone-600 hover:bg-stone-100")
       }
     >
       {children}
@@ -58,16 +58,20 @@ function Tab({ active, onClick, children }: { active: boolean; onClick: () => vo
   );
 }
 
-function SideBySide({ theirs, ours }: { theirs: string; ours: string }) {
+// SideBySide shows two versions with removed lines struck on the left and added lines marked
+// on the right. Also used by the page history.
+export function SideBySide({ theirs, ours, theirsLabel = "他人已保存", oursLabel = "你的版本" }: {
+  theirs: string; ours: string; theirsLabel?: string; oursLabel?: string;
+}) {
   const diff = computeLineDiff(theirs, ours);
   return (
-    <div className="flex-1 overflow-auto grid grid-cols-2 divide-x divide-neutral-200">
-      <div className="p-4">
-        <div className="text-[10px] uppercase font-semibold tracking-wider text-neutral-400 mb-2">他人已保存</div>
+    <div className="flex-1 overflow-auto grid grid-cols-2 divide-x divide-stone-200">
+      <div className="p-4 min-w-0">
+        <div className="text-[11px] font-semibold text-stone-400 mb-2">{theirsLabel}</div>
         <DiffColumn lines={diff.theirs} side="theirs" />
       </div>
-      <div className="p-4">
-        <div className="text-[10px] uppercase font-semibold tracking-wider text-neutral-400 mb-2">你的版本</div>
+      <div className="p-4 min-w-0">
+        <div className="text-[11px] font-semibold text-stone-400 mb-2">{oursLabel}</div>
         <DiffColumn lines={diff.ours} side="ours" />
       </div>
     </div>
@@ -82,9 +86,9 @@ function DiffColumn({ lines, side }: { lines: Array<{ text: string; kind: "same"
           key={i}
           className={
             "px-1.5 rounded-sm whitespace-pre-wrap break-all min-h-[1.25rem] " +
-            (l.kind === "same" || l.kind === "blank" ? "text-neutral-700" :
-             l.kind === "add" ? (side === "ours" ? "bg-emerald-50 text-emerald-900" : "text-neutral-700") :
-             (side === "theirs" ? "bg-red-50 text-red-900 line-through opacity-70" : "text-neutral-700"))
+            (l.kind === "same" || l.kind === "blank" ? "text-stone-700" :
+             l.kind === "add" ? (side === "ours" ? "bg-emerald-50 text-emerald-900" : "text-stone-700") :
+             (side === "theirs" ? "bg-red-50 text-red-900 line-through opacity-70" : "text-stone-700"))
           }
         >
           {l.text || " "}

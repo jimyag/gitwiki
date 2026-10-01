@@ -24,6 +24,7 @@ func main() {
 	as := auth.NewStore(cfg)
 	gm := gitstore.NewManager(cfg)
 	ph := presence.NewHub(as)
+	gm.StartSync(ph.BroadcastSync, func(slug string, pages []string) { ph.BroadcastChanged(slug, "", pages...) })
 	static, err := gitweb.Dist()
 	if err != nil {
 		log.Fatalf("load embedded dist: %v (run `bun --cwd web run build` first)", err)

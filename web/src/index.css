@@ -1,87 +1,123 @@
 @import "tailwindcss";
 
+/* System fonts only: nothing to download before first paint, and CJK text renders in the
+   platform's own UI font (PingFang / YaHei). */
 @theme inline {
-  --font-sans: "Inter", -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
-  --font-serif: "Source Serif 4", "Georgia", "Songti SC", "Noto Serif CJK SC", serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
   --font-mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
-}
-
-:root {
-  --bg-base: #fafaf9;         /* stone-50 */
-  --bg-sidebar: #0c0a09;      /* stone-950 */
-  --bg-sidebar-hover: #1c1917; /* stone-900 */
-  --bg-card: #ffffff;
-  --border: #e7e5e4;          /* stone-200 */
-  --border-strong: #d6d3d1;   /* stone-300 */
-  --text-strong: #1c1917;
-  --text: #44403c;
-  --text-faint: #78716c;
-  --text-mute: #a8a29e;
-  --brand: #059669;           /* emerald-600 */
-  --brand-strong: #047857;    /* emerald-700 */
-  --brand-soft: #d1fae5;      /* emerald-100 */
-  --ring: rgba(5, 150, 105, 0.4);
 }
 
 html, body, #root { height: 100%; }
 body {
-  background: var(--bg-base);
-  color: var(--text);
+  background: #fff;
+  color: #44403c; /* stone-700 */
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
-  font-feature-settings: "ss01", "cv05", "cv11";
 }
 
-/* Typography inside the editor body */
-.editor-body {
-  font-family: var(--font-sans);
-  font-size: 15.5px;
+/* In the base layer so utilities like outline-none still win over it. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid rgb(5 150 105 / 0.5); /* emerald-600 */
+    outline-offset: 1px;
+  }
+}
+
+/* GFM footnotes: a quieter block at the end of the page */
+.prose-preview .footnotes {
+  margin-top: 3rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #e7e5e4;
+  font-size: 14px;
+  color: #78716c;
+}
+.prose-preview sup a { text-decoration: none; padding: 0 1px; }
+
+/* GFM task lists inside the reading view */
+.prose-preview .contains-task-list { padding-left: 0.25rem; }
+.prose-preview .task-list-item { list-style: none; }
+.prose-preview .task-list-item input {
+  margin: 0 0.5rem 0 0;
+  vertical-align: -0.1em;
+  accent-color: #059669;
+}
+
+/* Hugo shortcodes ({{< … >}}) only render on the Hugo site; the wiki shows each as a chip. */
+.prose-preview .hugo-shortcode {
+  display: inline-block;
+  padding: 0 0.4rem;
+  border: 1px dashed #c4b5fd; /* violet-300 */
+  border-radius: 0.25rem;
+  background: #f5f3ff; /* violet-50 */
+  color: #6d28d9; /* violet-700 */
+  font-family: var(--font-mono);
+  font-size: 0.8em;
   line-height: 1.7;
-  letter-spacing: -0.003em;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
-/* CodeMirror */
-.cm-editor {
-  height: 100%;
-  background: transparent;
-  font-family: var(--font-mono) !important;
+/* Wide display math scrolls instead of widening the page. */
+.prose-preview .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.25rem 0;
+}
+
+/* Reading-view code blocks: one span.line per source line (Shiki's output and the plain
+   fallback alike), numbered with a CSS counter so copying the code leaves the numbers out. */
+.code-block pre {
+  margin: 0;
+  padding: 0.75rem 1rem 0.75rem 0;
+  overflow-x: auto;
+  background: transparent !important; /* Shiki inlines the theme background */
+  font-family: var(--font-mono);
   font-size: 13.5px;
-  line-height: 1.7;
+  line-height: 1.65;
+  counter-reset: line;
 }
-.cm-editor.cm-focused { outline: none; }
-.cm-content {
-  caret-color: var(--text-strong);
-  padding: 0;
-}
-.cm-line { padding: 0; }
-.cm-gutters {
-  background: transparent !important;
-  border: none !important;
-  color: var(--text-mute);
-  padding-right: 1.5rem;
-}
-.cm-lineNumbers .cm-gutterElement {
-  font-size: 11px;
-  color: #d6d3d1;
-  min-width: 2rem;
+.code-block .line::before {
+  counter-increment: line;
+  content: counter(line);
+  display: inline-block;
+  width: 2.75rem;
+  padding-right: 1rem;
   text-align: right;
+  color: #d6d3d1;
+  user-select: none;
 }
-.cm-activeLine { background: rgba(0,0,0,0.025); }
-.cm-cursor { border-left: 1.5px solid var(--text-strong); }
 
-/* markdown tokens */
-.cm-line .ͼ5 { color: #a8a29e; }           /* punctuation */
-.cm-line .ͼ6 { color: #1c1917; font-weight: 600; } /* heading text */
-.cm-line .ͼ7 { color: #44403c; font-weight: 600; } /* bold */
-.cm-line .ͼ8 { color: #57534e; font-style: italic; } /* italic */
-.cm-line .ͼ9 { color: #a8a29e; }
-.cm-line .ͼa { color: #0284c7; text-decoration: underline; text-decoration-color: #bae6fd; } /* link */
-.cm-line .ͼb {
-  color: #047857;
-  background: #f0fdf4;
-  padding: 0 3px;
-  border-radius: 3px;
-  font-size: 12.5px;
+/* md-editor-rt in gitwiki's colours. It fills the height left below the title (Editor lays that
+   out) and scrolls inside, so its toolbar stays in view on long pages. Two classes: its own
+   `.md-editor` rule (variables + a fixed 500px height) loads later with the editor chunk. */
+.gitwiki-md.md-editor {
+  --md-color: #44403c;
+  --md-hover-color: #1c1917;
+  --md-bk-color: #fff;
+  --md-bk-color-outstand: #fafaf9;
+  --md-bk-hover-color: #f5f5f4;
+  --md-border-color: #e7e5e4;
+  --md-border-hover-color: #d6d3d1;
+  --md-border-active-color: #059669;
+  --md-modal-mask: rgb(28 25 23 / 0.25);
+  --md-scrollbar-bg-color: transparent;
+  --md-scrollbar-thumb-color: rgb(0 0 0 / 0.12);
+  --md-scrollbar-thumb-hover-color: rgb(0 0 0 / 0.22);
+  --md-scrollbar-thumb-active-color: rgb(0 0 0 / 0.3);
+  height: 100%;
+  border-radius: 0.5rem;
+}
+/* Its stylesheet pins the text to a 14px monospace (`.md-editor .ͼ1 .cm-scroller`); prose should
+   read like the page, with code blocks monospace via .cm-codeLine. */
+.gitwiki-md.md-editor .cm-editor .cm-scroller {
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.8;
+}
+
+/* Phones: no room for the editor's line-number gutter. */
+@media (max-width: 767px) {
+  .cm-gutters { display: none !important; }
 }
 
 /* Remote cursor / selection */
@@ -96,8 +132,7 @@ body {
 /* Scrollbar */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.25); }
+::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.22); }
 
-/* selection */
-::selection { background: rgba(5, 150, 105, 0.15); }
+::selection { background: rgb(5 150 105 / 0.15); }

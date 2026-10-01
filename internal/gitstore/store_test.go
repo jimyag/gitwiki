@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/jimyag/gitwiki/internal/config"
@@ -101,6 +103,38 @@ func TestMerge3Conflict(t *testing.T) {
 		t.Fatalf("missing markers:\n%s", merged)
 	}
 	t.Logf("conflict merged content:\n%s", merged)
+}
+
+// Regression: CreatePage's leaf→bundle rename was never staged (bad git args, error ignored),
+// so GitHub kept both <id>.md and <id>/_index.md while the rename sat in the working tree.
+func TestPromoteToBundleStagesRename(t *testing.T) {
+	r := setupRepo(t)
+	abs, isBundle, err := r.diskPath("a")
+	if err != nil || isBundle {
+		t.Fatalf("diskPath(a) = bundle %v, err %v", isBundle, err)
+	}
+	if err := r.promoteToBundle(t.Context(), "a", abs); err != nil {
+		t.Fatal(err)
+	}
+	dir := r.cfg.Workdir
+	if got := gitLines(t, dir, "diff", "--cached", "--name-only", "--no-renames"); !slices.Equal(got, []string{"content/a.md", "content/a/_index.md"}) {
+		t.Fatalf("staged = %q", got)
+	}
+	if got := gitLines(t, dir, "diff", "--name-only"); len(got) != 0 {
+		t.Fatalf("unstaged leftovers: %q", got)
+	}
+	if got := gitLines(t, dir, "ls-files", "--others", "--exclude-standard"); len(got) != 0 {
+		t.Fatalf("untracked leftovers: %q", got)
+	}
+}
+
+func gitLines(t *testing.T, dir string, args ...string) []string {
+	t.Helper()
+	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return strings.Fields(string(out))
 }
 
 func contains(s, sub string) bool {

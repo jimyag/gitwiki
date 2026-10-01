@@ -4,6 +4,7 @@ package presence
 import (
 	"context"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,16 +37,18 @@ type inbound struct {
 }
 
 type outbound struct {
-	Type  string `json:"type"`
-	Peers []Peer `json:"peers,omitempty"`
-	User  string `json:"user,omitempty"`
-	Page  string `json:"page,omitempty"`
-	SHA   string `json:"sha,omitempty"`
+	Type  string   `json:"type"`
+	Peers []Peer   `json:"peers,omitempty"`
+	User  string   `json:"user,omitempty"`
+	Page  string   `json:"page,omitempty"`
+	Pages []string `json:"pages,omitempty"` // "changed": the pages that changed
 
 	// cursor broadcast
 	Anchor  int    `json:"anchor,omitempty"`  // absolute offset in doc
 	Head    int    `json:"head,omitempty"`    // selection head (== anchor if no selection)
 	Color   string `json:"color,omitempty"`   // server-assigned stable color for the user
+
+	Error string `json:"error,omitempty"` // "sync": why pushing to origin failed; empty once it works
 }
 
 type Hub struct {
@@ -140,15 +143,30 @@ func (h *Hub) broadcast(room map[*client]bool, msg outbound, except *client) {
 	}
 }
 
-func (h *Hub) BroadcastSaved(repo, page, sha, byUser string) {
-	key := repo + "/" + page
-	h.mu.Lock()
-	room := h.rooms[key]
-	h.mu.Unlock()
-	if room == nil {
-		return
+// BroadcastChanged tells everyone in repo that pages changed (saved, created, moved, deleted;
+// none for a reorder), so they refresh the page tree and see whether the page they have open
+// is stale. byUser is "" for commits pulled from GitHub.
+func (h *Hub) BroadcastChanged(repo, byUser string, pages ...string) {
+	h.broadcastRepo(repo, outbound{Type: "changed", User: byUser, Pages: pages})
+}
+
+// BroadcastSync tells everyone on any page of repo whether the last push to origin worked.
+func (h *Hub) BroadcastSync(repo string, err error) {
+	msg := outbound{Type: "sync"}
+	if err != nil {
+		msg.Error = err.Error()
 	}
-	h.broadcast(room, outbound{Type: "saved", SHA: sha, User: byUser, Page: page}, nil)
+	h.broadcastRepo(repo, msg)
+}
+
+func (h *Hub) broadcastRepo(repo string, msg outbound) {
+	h.mu.Lock()
+	defer h.mu.Unlock() // broadcast never blocks, and the rooms must not change under it
+	for key, room := range h.rooms {
+		if strings.HasPrefix(key, repo+"/") {
+			h.broadcast(room, msg, nil)
+		}
+	}
 }
 
 func (c *client) writer() {

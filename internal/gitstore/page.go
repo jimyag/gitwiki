@@ -2,9 +2,9 @@ package gitstore
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"crypto/sha1"
 	"encoding/hex"
 	"errors"
@@ -13,11 +13,13 @@ import (
 	"mime"
 	"net/http"
 	"os"
-	"os/exec"
+	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jimyag/gitwiki/internal/auth"
 )
@@ -27,16 +29,95 @@ import (
 //   - bundle: content/<id>/_index.md, can have children and page-attached assets
 // Page operations automatically migrate between forms.
 type Page struct {
-	ID      string  `json:"id"`       // e.g. "guide/install" - slash-separated, no extension
-	Title   string  `json:"title"`    // from front matter, fallback to last segment
-	Weight  int     `json:"weight"`   // 0 means unset
-	IsDir   bool    `json:"is_dir"`   // bundle form (or virtual: has children)
-	HasBody bool    `json:"has_body"` // has backing markdown file
-	Children []*Page `json:"children,omitempty"`
+	ID       string   `json:"id"`       // e.g. "guide/install" - slash-separated, no extension
+	Title    string   `json:"title"`    // from front matter, fallback to last segment
+	Weight   int      `json:"weight"`   // 0 means unset
+	IsDir    bool     `json:"is_dir"`   // bundle form (or virtual: has children)
+	HasBody  bool     `json:"has_body"` // has backing markdown file
+	Tags     []string `json:"tags,omitempty"`
+	Draft    bool     `json:"draft,omitzero"`
+	Children []*Page  `json:"children,omitempty"`
 }
 
-// ErrNotFound is returned when page content does not exist.
-var ErrNotFound = errors.New("page not found")
+var (
+	// ErrNotFound is returned when page content does not exist.
+	ErrNotFound = errors.New("page not found")
+	// ErrExists is returned when the destination of a move or restore is taken.
+	ErrExists = errors.New("page already exists")
+)
+
+// Meta is the front matter gitwiki edits besides the title. Every other field is kept as is.
+type Meta struct {
+	Tags        []string `json:"tags"`
+	Draft       bool     `json:"draft"`
+	Description string   `json:"description"`
+	Date        string   `json:"date"`
+}
+
+// MetaOf reads Meta from parsed front matter.
+func MetaOf(fm map[string]any) Meta {
+	m := Meta{Tags: []string{}}
+	switch t := fm["tags"].(type) {
+	case []any:
+		for _, v := range t {
+			if s := fmt.Sprint(v); s != "" {
+				m.Tags = append(m.Tags, s)
+			}
+		}
+	case string:
+		if t != "" {
+			m.Tags = append(m.Tags, t)
+		}
+	}
+	m.Draft, _ = fm["draft"].(bool)
+	m.Description, _ = fm["description"].(string)
+	m.Date, _ = fm["date"].(string)
+	return m
+}
+
+// Apply writes the fields of m that differ from fm into it; untouched fields keep their
+// original form, and an emptied field drops its key.
+func (m Meta) Apply(fm map[string]any) {
+	cur := MetaOf(fm)
+	set := func(key string, changed, empty bool, v any) {
+		switch {
+		case !changed:
+		case empty:
+			delete(fm, key)
+		default:
+			fm[key] = v
+		}
+	}
+	set("tags", !slices.Equal(cur.Tags, m.Tags), len(m.Tags) == 0, m.Tags)
+	set("draft", cur.Draft != m.Draft, !m.Draft, true)
+	set("description", cur.Description != m.Description, m.Description == "", m.Description)
+	set("date", cur.Date != m.Date, m.Date == "", m.Date)
+}
+
+// commitAs commits what is staged with u as author and committer.
+func (r *Repo) commitAs(ctx context.Context, u *auth.User, message string) error {
+	name := cmp.Or(u.Name, u.Login)
+	email := cmp.Or(u.Email, u.Login+"@users.noreply.github.com")
+	env := []string{
+		"GIT_AUTHOR_NAME=" + name, "GIT_AUTHOR_EMAIL=" + email,
+		"GIT_COMMITTER_NAME=" + name, "GIT_COMMITTER_EMAIL=" + email,
+	}
+	return r.gitEnv(ctx, env, "commit", "-q", "-m", message)
+}
+
+// gitPath turns a path relative to the content dir into one relative to the repo root.
+func (r *Repo) gitPath(rel string) string {
+	return path.Join(r.cfg.ContentDir, filepath.ToSlash(rel))
+}
+
+// assetsDir is page id's attachment folder relative to the content dir. The home page is the
+// content root's bundle, so its attachments sit in content/assets.
+func assetsDir(id string) string {
+	if id == HomeID {
+		return "assets"
+	}
+	return id + "/assets"
+}
 
 // diskPath returns the absolute markdown file path for the page id.
 // Leaf takes precedence; falls back to bundle index.
@@ -64,8 +145,8 @@ func (r *Repo) diskPath(id string) (abs string, isBundle bool, err error) {
 // PageTree returns the hierarchy under content dir as Pages.
 // Each directory containing _index.md or .md files becomes a page node.
 func (r *Repo) PageTree(ctx context.Context) (*Page, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	root := &Page{ID: "", Title: r.cfg.Title, IsDir: true}
 	contentRoot := filepath.Join(r.cfg.Workdir, r.cfg.ContentDir)
 	err := filepath.WalkDir(contentRoot, func(path string, de os.DirEntry, err error) error {
@@ -102,8 +183,9 @@ func (r *Repo) PageTree(ctx context.Context) (*Page, error) {
 					id += "/"
 				}
 				id += base
-				title, weight := readTitleWeight(path, base)
-				cur.Children = append(cur.Children, &Page{ID: id, Title: title, Weight: weight, HasBody: true})
+				p := readPageInfo(path, base)
+				p.ID, p.HasBody = id, true
+				cur.Children = append(cur.Children, p)
 				continue
 			}
 			if last && isIndexMD {
@@ -112,11 +194,10 @@ func (r *Repo) PageTree(ctx context.Context) (*Page, error) {
 					root.HasBody = true
 					continue
 				}
-				title, weight := readTitleWeight(path, parts[len(parts)-2])
+				info := readPageInfo(path, parts[len(parts)-2])
 				parentID := strings.Join(parts[:len(parts)-1], "/")
 				if n := findByID(root, parentID); n != nil {
-					if title != "" && title != parts[len(parts)-2] { n.Title = title }
-					n.Weight = weight
+					n.Title, n.Weight, n.Tags, n.Draft = info.Title, info.Weight, info.Tags, info.Draft
 				}
 				continue
 			}
@@ -169,8 +250,8 @@ func sortTree(p *Page) {
 
 // ReadPage returns the page's content split into front matter / body, plus base SHA.
 func (r *Repo) ReadPage(ctx context.Context, id string) (*PageContent, bool, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	abs, isBundle, err := r.diskPath(id)
 	if err != nil {
 		return nil, false, err
@@ -227,6 +308,11 @@ func (r *Repo) SavePage(ctx context.Context, id string, doc *PageDoc, baseSHA, m
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	abs, isBundle, err := r.diskPath(id)
+	if errors.Is(err, ErrNotFound) && baseSHA != "" {
+		// Edited from a loaded page that has since been deleted or moved: recreating it here
+		// would resurrect a stray copy.
+		return "", err
+	}
 	if errors.Is(err, ErrNotFound) {
 		// Creating new page. Decide form: leaf by default, bundle if dir with children exists.
 		dirPath, _ := r.resolvePath(id)
@@ -246,9 +332,8 @@ func (r *Repo) SavePage(ctx context.Context, id string, doc *PageDoc, baseSHA, m
 		return "", err
 	}
 
-	if err := r.git(ctx, "fetch", "origin", r.cfg.Branch); err != nil {
-		return "", fmt.Errorf("fetch: %w", err)
-	}
+	// Conflicts are judged against the local HEAD: every gitwiki edit lands there first.
+	// Edits pushed to GitHub from elsewhere are folded in by the background push (rebase).
 	localHead, err := r.headSHA(ctx)
 	if err != nil {
 		return "", err
@@ -276,9 +361,6 @@ func (r *Repo) SavePage(ctx context.Context, id string, doc *PageDoc, baseSHA, m
 			}
 		}
 		contentBytes = []byte(merged)
-		if err := r.git(ctx, "merge", "--ff-only", "origin/"+r.cfg.Branch); err != nil {
-			return "", fmt.Errorf("ff: %w", err)
-		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
@@ -295,34 +377,14 @@ func (r *Repo) SavePage(ctx context.Context, id string, doc *PageDoc, baseSHA, m
 		head, _ := r.headSHA(ctx)
 		return head, nil
 	}
-	if message == "" {
-		message = "wiki: update " + id
-	}
-	name := u.Name
-	if name == "" {
-		name = u.Login
-	}
-	email := u.Email
-	if email == "" {
-		email = u.Login + "@users.noreply.github.com"
-	}
-	env := []string{
-		"GIT_AUTHOR_NAME=" + name, "GIT_AUTHOR_EMAIL=" + email,
-		"GIT_COMMITTER_NAME=" + name, "GIT_COMMITTER_EMAIL=" + email,
-	}
-	if err := r.gitEnv(ctx, env, "commit", "-m", message); err != nil {
+	if err := r.commitAs(ctx, u, cmp.Or(message, "wiki: update "+id)); err != nil {
 		return "", err
 	}
 	sha, err := r.headSHA(ctx)
 	if err != nil {
 		return "", err
 	}
-	if err := r.setPushToken(ctx, u.Token); err != nil {
-		return sha, err
-	}
-	if err := r.git(ctx, "push", "origin", r.cfg.Branch); err != nil {
-		return sha, fmt.Errorf("%w: %v", ErrPush, err)
-	}
+	r.schedulePush(u.Token)
 	return sha, nil
 }
 
@@ -332,6 +394,9 @@ func (r *Repo) SavePage(ctx context.Context, id string, doc *PageDoc, baseSHA, m
 func (r *Repo) CreatePage(ctx context.Context, parentID, title string, u *auth.User) (string, error) {
 	if title == "" {
 		return "", ErrBadPath
+	}
+	if parentID == HomeID { // the home page's children are the top-level pages
+		parentID = ""
 	}
 	dedupKey := parentID + "|" + title
 	r.recentCreateMu.Lock()
@@ -359,27 +424,20 @@ func (r *Repo) CreatePage(ctx context.Context, parentID, title string, u *auth.U
 	if id == "" {
 		return "", fmt.Errorf("could not allocate unique slug")
 	}
-	// If parentID refers to a leaf page, convert it to bundle first so it can host children.
+	// A leaf parent must become a bundle to host children. The rename is only staged here;
+	// SavePage's commit below picks it up together with the new page.
 	if parentID != "" {
-		if _, isBundle, err := r.diskPath(parentID); err == nil && !isBundle {
-			// Promote uses no lock because we're already inside SavePage's lock scope via r.mu.
-			// But CreatePage is called at top-level without holding r.mu — see SavePage body.
-			// SavePage will take r.mu itself; we must not take it twice.
-			// PromoteToBundleHelper assumes no lock.
-			// Call a no-lock version: use the helper but dance around SavePage's lock via
-			// sneaky order: savePage will pick the on-disk layout after promotion, but to
-			// actually persist the rename we need to run git ops before calling SavePage.
-			// Simplest: do the promotion inline using exec.Command (same as PromoteToBundle body).
-			abs, _, derr := r.diskPath(parentID)
-			if derr == nil {
-				bundleAbs, _ := r.resolvePath(filepath.Join(parentID, "_index.md"))
-				os.MkdirAll(filepath.Dir(bundleAbs), 0o755)
-				os.Rename(abs, bundleAbs)
-				gitOld := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, parentID+".md"))
-				gitNew := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, parentID, "_index.md"))
-				// stage, will be committed by the upcoming SavePage commit
-				r.gitEnv(ctx, nil, "-C", r.cfg.Workdir, "add", "-A", "--", gitOld, gitNew)
-			}
+		r.mu.Lock()
+		abs, isBundle, err := r.diskPath(parentID)
+		switch {
+		case errors.Is(err, ErrNotFound): // plain directory without a page file: nothing to promote
+			err = nil
+		case err == nil && !isBundle:
+			err = r.promoteToBundle(ctx, parentID, abs)
+		}
+		r.mu.Unlock()
+		if err != nil {
+			return "", err
 		}
 	}
 	doc := &PageDoc{
@@ -409,6 +467,24 @@ func randomSlug(n int) string {
 	return string(b)
 }
 
+// promoteToBundle moves leaf <id>.md (at leafAbs) to <id>/_index.md and stages both paths,
+// so the rename lands in the caller's next commit. Caller holds r.mu.
+func (r *Repo) promoteToBundle(ctx context.Context, id, leafAbs string) error {
+	bundleAbs, err := r.resolvePath(filepath.Join(id, "_index.md"))
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(bundleAbs), 0o755); err != nil {
+		return err
+	}
+	if err := os.Rename(leafAbs, bundleAbs); err != nil {
+		return fmt.Errorf("leaf→bundle: %w", err)
+	}
+	gitOld := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, id+".md"))
+	gitNew := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, id, "_index.md"))
+	return r.git(ctx, "add", "--", gitOld, gitNew)
+}
+
 // relToMd returns the on-disk markdown path (relative to content dir) for a page id.
 func relToMd(id string, isBundle bool) string {
 	if isBundle {
@@ -426,6 +502,9 @@ func (r *Repo) SaveAsset(ctx context.Context, id string, filename string, body i
 
 	// Migrate leaf to bundle if needed, since assets must live under the page bundle.
 	abs, isBundle, err := r.diskPath(id)
+	if errors.Is(err, ErrNotFound) && id == HomeID { // no home page yet: content/assets still works
+		err = nil
+	}
 	if errors.Is(err, ErrNotFound) {
 		// Create empty bundle root directly.
 		bundleAbs, bErr := r.resolvePath(filepath.Join(id, "_index.md"))
@@ -441,35 +520,14 @@ func (r *Repo) SaveAsset(ctx context.Context, id string, filename string, body i
 		return "", err
 	}
 
-	if !isBundle {
-		// leaf -> bundle migration: mv leaf.md → id/_index.md
-		leafAbs := abs
-		bundleAbs, bErr := r.resolvePath(filepath.Join(id, "_index.md"))
-		if bErr != nil {
-			return "", bErr
-		}
-		if err := os.MkdirAll(filepath.Dir(bundleAbs), 0o755); err != nil {
-			return "", err
-		}
-		if err := os.Rename(leafAbs, bundleAbs); err != nil {
-			return "", fmt.Errorf("leaf→bundle: %w", err)
-		}
-		gitOld := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, id+".md"))
-		gitNew := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, id, "_index.md"))
-		if err := r.git(ctx, "add", "--", gitOld, gitNew); err != nil {
+	// The home page (content/_index.md) already is the content root's bundle.
+	if !isBundle && id != HomeID {
+		if err := r.promoteToBundle(ctx, id, abs); err != nil {
 			return "", err
 		}
 		// Commit migration separately to keep history clean.
 		if err := r.git(ctx, "diff", "--cached", "--quiet"); err != nil {
-			name := u.Name
-			if name == "" { name = u.Login }
-			email := u.Email
-			if email == "" { email = u.Login + "@users.noreply.github.com" }
-			env := []string{
-				"GIT_AUTHOR_NAME=" + name, "GIT_AUTHOR_EMAIL=" + email,
-				"GIT_COMMITTER_NAME=" + name, "GIT_COMMITTER_EMAIL=" + email,
-			}
-			if err := r.gitEnv(ctx, env, "commit", "-m", "wiki: migrate to bundle "+id); err != nil {
+			if err := r.commitAs(ctx, u, "wiki: migrate to bundle "+id); err != nil {
 				return "", err
 			}
 		}
@@ -494,7 +552,10 @@ func (r *Repo) SaveAsset(ctx context.Context, id string, filename string, body i
 	safeBase := sanitizeFilename(base)
 	finalName := safeBase + "-" + shortHash + ext
 
-	assetsDirAbs, _ := r.resolvePath(filepath.Join(id, "assets"))
+	assetsDirAbs, err := r.resolvePath(assetsDir(id))
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(assetsDirAbs, 0o755); err != nil {
 		return "", err
 	}
@@ -502,36 +563,47 @@ func (r *Repo) SaveAsset(ctx context.Context, id string, filename string, body i
 	if err := os.WriteFile(assetAbs, data, 0o644); err != nil {
 		return "", err
 	}
-	gitPath := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, id, "assets", finalName))
+	gitPath := r.gitPath(assetsDir(id) + "/" + finalName)
 	if err := r.git(ctx, "add", "--", gitPath); err != nil {
 		return "", err
 	}
-	name := u.Name
-	if name == "" { name = u.Login }
-	email := u.Email
-	if email == "" { email = u.Login + "@users.noreply.github.com" }
-	env := []string{
-		"GIT_AUTHOR_NAME=" + name, "GIT_AUTHOR_EMAIL=" + email,
-		"GIT_COMMITTER_NAME=" + name, "GIT_COMMITTER_EMAIL=" + email,
-	}
-	if err := r.gitEnv(ctx, env, "commit", "-m", "wiki: add asset "+id+"/assets/"+finalName); err != nil {
+	if err := r.commitAs(ctx, u, "wiki: add asset "+gitPath); err != nil {
 		return "", err
 	}
-	if err := r.setPushToken(ctx, u.Token); err != nil {
-		return "", err
-	}
-	if err := r.git(ctx, "push", "origin", r.cfg.Branch); err != nil {
-		return "", fmt.Errorf("%w: %v", ErrPush, err)
-	}
+	r.schedulePush(u.Token)
 	return "assets/" + finalName, nil
 }
 
+// DeleteAsset removes attachment name of page id.
+func (r *Repo) DeleteAsset(ctx context.Context, id, name string, u *auth.User) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	abs, err := r.AssetPath(id, name)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return ErrNotFound
+	}
+	gitPath := r.gitPath(assetsDir(id) + "/" + name)
+	if err := r.git(ctx, "rm", "-q", "--", gitPath); err != nil {
+		return err
+	}
+	if err := r.commitAs(ctx, u, "wiki: delete asset "+gitPath); err != nil {
+		return err
+	}
+	r.schedulePush(u.Token)
+	return nil
+}
+
+// sanitizeFilename keeps letters and digits of any script (people find "需求说明.pdf" again by
+// its name), '-', '_' and '.', and turns spaces into '-'.
 func sanitizeFilename(s string) string {
 	s = strings.ToLower(s)
 	var b strings.Builder
 	for _, r := range s {
 		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+		case unicode.IsLetter(r), unicode.IsDigit(r), r == '-', r == '_', r == '.':
 			b.WriteRune(r)
 		case r == ' ':
 			b.WriteRune('-')
@@ -555,111 +627,95 @@ func extBySniff(r io.Reader) string {
 	}
 	return ".bin"
 }
-// DeletePage removes a page. For leaf pages removes the .md file. For bundle pages
-// removes _index.md and (only if keepChildren=false) the whole directory.
-// Currently requires keepChildren=true (we refuse to cascade).
-func (r *Repo) DeletePage(ctx context.Context, id string, u *auth.User, message string) error {
+// DeletePage removes page id together with its children and attachments, in one commit.
+// Git keeps the files: RecentChanges lists the deletion and RestorePage undoes it.
+func (r *Repo) DeletePage(ctx context.Context, id string, u *auth.User) error {
+	if id == HomeID {
+		return ErrBadPath
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, _, err := r.diskPath(id); err != nil {
+		return err
+	}
+	// Both forms, so a leaf with a same-named folder of children goes as a whole too.
+	if err := r.git(ctx, "rm", "-r", "-q", "--ignore-unmatch", "--", r.gitPath(id+".md"), r.gitPath(id)); err != nil {
+		return err
+	}
+	if err := r.commitAs(ctx, u, "wiki: delete "+id); err != nil {
+		return err
+	}
+	r.schedulePush(u.Token)
+	return nil
+}
+
+// MovePage moves page id, with its children and attachments, under newParent ("" or the home
+// page for the top level). The page keeps its slug; links to it and to its children are
+// rewritten in the same commit. It returns the new id and how many pages had links rewritten.
+func (r *Repo) MovePage(ctx context.Context, id, newParent string, u *auth.User) (string, int, error) {
+	if newParent == HomeID {
+		newParent = ""
+	}
+	if id == HomeID || newParent == id || strings.HasPrefix(newParent, id+"/") {
+		return "", 0, ErrBadPath
+	}
+	newID := path.Join(newParent, path.Base(id))
+	if newID == id {
+		return id, 0, nil
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	abs, isBundle, err := r.diskPath(id)
 	if err != nil {
-		return err
+		return "", 0, err
 	}
-	if isBundle {
-		// Check for children
-		dir := filepath.Dir(abs)
-		ents, _ := os.ReadDir(dir)
-		hasOthers := false
-		for _, e := range ents {
-			if e.Name() != "_index.md" {
-				hasOthers = true
-				break
+	dst, err := r.resolvePath(newID)
+	if err != nil {
+		return "", 0, err
+	}
+	if _, err := os.Stat(dst + ".md"); err == nil {
+		return "", 0, ErrExists
+	}
+	if _, err := os.Stat(dst); err == nil {
+		return "", 0, ErrExists
+	}
+	if newParent != "" {
+		parentAbs, parentIsBundle, err := r.diskPath(newParent)
+		switch {
+		case errors.Is(err, ErrNotFound): // a folder without a page file can hold pages too
+			dir, _ := r.resolvePath(newParent)
+			if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+				return "", 0, ErrNotFound
+			}
+		case err != nil:
+			return "", 0, err
+		case !parentIsBundle:
+			if err := r.promoteToBundle(ctx, newParent, parentAbs); err != nil {
+				return "", 0, err
 			}
 		}
-		if hasOthers {
-			return fmt.Errorf("bundle page %q still has children or assets; delete them first", id)
-		}
 	}
-	gitPath := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, relToMd(id, isBundle)))
-	// Use `git rm` to both delete the file and stage the deletion.
-	// --ignore-unmatch makes repeats idempotent if a previous run already staged it.
-	if err := r.git(ctx, "rm", "-q", "--ignore-unmatch", "--", gitPath); err != nil {
-		return err
-	}
-	if message == "" {
-		message = "wiki: delete " + id
-	}
-	name := u.Name
-	if name == "" { name = u.Login }
-	email := u.Email
-	if email == "" { email = u.Login + "@users.noreply.github.com" }
-	env := []string{
-		"GIT_AUTHOR_NAME=" + name, "GIT_AUTHOR_EMAIL=" + email,
-		"GIT_COMMITTER_NAME=" + name, "GIT_COMMITTER_EMAIL=" + email,
-	}
-	if err := r.gitEnv(ctx, env, "commit", "-m", message); err != nil {
-		return err
-	}
-	if err := r.setPushToken(ctx, u.Token); err != nil {
-		return err
-	}
-	if err := r.git(ctx, "push", "origin", r.cfg.Branch); err != nil {
-		return fmt.Errorf("%w: %v", ErrPush, err)
-	}
-	return nil
-}
-
-// RenamePage moves a page (incl. its assets dir) to a new ID. Renames use git mv if both
-// source and destination exist as files; else it falls back to os.Rename + git add -A.
-func (r *Repo) RenamePage(ctx context.Context, oldID, newID string, u *auth.User) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if oldID == "" || newID == "" || oldID == newID {
-		return ErrBadPath
-	}
-	abs, isBundle, err := r.diskPath(oldID)
-	if err != nil {
-		return err
-	}
-	// Refuse if destination already exists.
-	if _, _, err := r.diskPath(newID); err == nil {
-		return fmt.Errorf("destination exists: %s", newID)
-	}
+	from, to := abs, dst+".md"
+	oldGit, newGit := r.gitPath(id+".md"), r.gitPath(newID+".md")
 	if isBundle {
-		// Move whole directory: <old>/ → <new>/
-		srcDir := filepath.Dir(abs)
-		dstDir, e := r.resolvePath(newID)
-		if e != nil { return e }
-		if err := os.MkdirAll(filepath.Dir(dstDir), 0o755); err != nil { return err }
-		if err := os.Rename(srcDir, dstDir); err != nil { return err }
-		gitOld := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, oldID))
-		gitNew := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, newID))
-		if err := r.git(ctx, "add", "-A", "--", gitOld, gitNew); err != nil { return err }
-	} else {
-		// Leaf move: content/old.md → content/new.md
-		dst, e := r.resolvePath(newID + ".md")
-		if e != nil { return e }
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil { return err }
-		if err := os.Rename(abs, dst); err != nil { return err }
-		gitOld := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, oldID+".md"))
-		gitNew := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, newID+".md"))
-		if err := r.git(ctx, "add", "-A", "--", gitOld, gitNew); err != nil { return err }
+		from, to = filepath.Dir(abs), dst
+		oldGit, newGit = r.gitPath(id), r.gitPath(newID)
 	}
-	name := u.Name
-	if name == "" { name = u.Login }
-	email := u.Email
-	if email == "" { email = u.Login + "@users.noreply.github.com" }
-	env := []string{
-		"GIT_AUTHOR_NAME=" + name, "GIT_AUTHOR_EMAIL=" + email,
-		"GIT_COMMITTER_NAME=" + name, "GIT_COMMITTER_EMAIL=" + email,
+	if err := os.Rename(from, to); err != nil {
+		return "", 0, err
 	}
-	msg := fmt.Sprintf("wiki: rename %s → %s", oldID, newID)
-	if err := r.gitEnv(ctx, env, "commit", "-m", msg); err != nil { return err }
-	if err := r.setPushToken(ctx, u.Token); err != nil { return err }
-	if err := r.git(ctx, "push", "origin", r.cfg.Branch); err != nil {
-		return fmt.Errorf("%w: %v", ErrPush, err)
+	if err := r.git(ctx, "add", "-A", "--", oldGit, newGit); err != nil {
+		return "", 0, err
 	}
-	return nil
+	n, err := r.rewriteLinks(ctx, id, newID)
+	if err != nil {
+		return "", 0, err
+	}
+	if err := r.commitAs(ctx, u, fmt.Sprintf("wiki: move %s → %s", id, newID)); err != nil {
+		return "", 0, err
+	}
+	r.schedulePush(u.Token)
+	return newID, n, nil
 }
 
 type ConflictError struct {
@@ -706,11 +762,6 @@ func (r *Repo) OrderChildren(ctx context.Context, parentID string, orderedIDs []
 			return fmt.Errorf("id %q is not a direct child of %q", id, parentID)
 		}
 	}
-	name := u.Name
-	if name == "" { name = u.Login }
-	email := u.Email
-	if email == "" { email = u.Login + "@users.noreply.github.com" }
-
 	for i, id := range orderedIDs {
 		abs, isBundle, err := r.diskPath(id)
 		if err != nil {
@@ -731,36 +782,37 @@ func (r *Repo) OrderChildren(ctx context.Context, parentID string, orderedIDs []
 	if err := r.git(ctx, "diff", "--cached", "--quiet"); err == nil {
 		return nil
 	}
-	env := []string{
-		"GIT_AUTHOR_NAME=" + name, "GIT_AUTHOR_EMAIL=" + email,
-		"GIT_COMMITTER_NAME=" + name, "GIT_COMMITTER_EMAIL=" + email,
-	}
 	msg := fmt.Sprintf("wiki: reorder pages under %s", parentID)
 	if parentID == "" { msg = "wiki: reorder top-level pages" }
-	if err := r.gitEnv(ctx, env, "commit", "-m", msg); err != nil { return err }
-	if err := r.setPushToken(ctx, u.Token); err != nil { return err }
-	if err := r.git(ctx, "push", "origin", r.cfg.Branch); err != nil {
-		return fmt.Errorf("%w: %v", ErrPush, err)
-	}
+	if err := r.commitAs(ctx, u, msg); err != nil { return err }
+	r.schedulePush(u.Token)
 	return nil
 }
 
-// readTitleWeight best-effort: parse front matter for title+weight. Falls back to fallbackTitle.
-func readTitleWeight(absPath string, fallbackTitle string) (title string, weight int) {
+// readPageInfo reads the tree fields (title, weight, tags, draft) from a page file's front
+// matter, best effort. The title falls back to fallbackTitle.
+func readPageInfo(absPath string, fallbackTitle string) *Page {
+	p := &Page{Title: fallbackTitle}
 	data, err := os.ReadFile(absPath)
-	if err != nil { return fallbackTitle, 0 }
-	doc, err := ParsePage(data)
-	if err != nil { return fallbackTitle, 0 }
-	if t, ok := doc.FrontMatter["title"].(string); ok && t != "" { title = t } else { title = fallbackTitle }
+	if err != nil {
+		return p
+	}
+	doc, _ := ParsePage(data)
+	p.Title = pageTitle(doc, fallbackTitle)
 	switch w := doc.FrontMatter["weight"].(type) {
 	case int:
-		weight = w
+		p.Weight = w
 	case int64:
-		weight = int(w)
+		p.Weight = int(w)
 	case float64:
-		weight = int(w)
+		p.Weight = int(w)
 	}
-	return
+	m := MetaOf(doc.FrontMatter)
+	if len(m.Tags) > 0 {
+		p.Tags = m.Tags
+	}
+	p.Draft = m.Draft
+	return p
 }
 
 func findByID(root *Page, id string) *Page {
@@ -772,179 +824,8 @@ func findByID(root *Page, id string) *Page {
 }
 
 
-// SearchResult is one matched line in one page.
-type SearchResult struct {
-	PageID  string `json:"page_id"`
-	Title   string `json:"title"`
-	Path    string `json:"path"`
-	Line    int    `json:"line"` // 1-based; 0 means filename/title-only match
-	Snippet string `json:"snippet"`
-}
-
-// Search uses ripgrep when available, otherwise falls back to a Go walk.
-// Query matches title, body, and file path, case-insensitively. Result capped at 50.
-func (r *Repo) Search(ctx context.Context, q string) ([]SearchResult, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if q == "" || len(q) > 256 {
-		return nil, ErrBadPath
-	}
-	contentRoot := filepath.Join(r.cfg.Workdir, r.cfg.ContentDir)
-	if rg, err := exec.LookPath("rg"); err == nil {
-		return r.searchWithRg(ctx, rg, q, contentRoot)
-	}
-	return r.searchWithWalk(ctx, q, contentRoot)
-}
-
-func (r *Repo) searchWithRg(ctx context.Context, rg, q, contentRoot string) ([]SearchResult, error) {
-	contentCmd := exec.CommandContext(ctx, rg,
-		"--json", "-i", "--max-count", "5",
-		"-g", "*.md", "-g", "!**/assets/**",
-		"--", q,
-	)
-	contentCmd.Dir = contentRoot
-	contentOut, _ := contentCmd.Output()
-
-	pathCmd := exec.CommandContext(ctx, rg, "--files", "-g", "*.md", "-g", "!**/assets/**")
-	pathCmd.Dir = contentRoot
-	pathOut, _ := pathCmd.Output()
-
-	results := []SearchResult{}
-	seenContent := map[string]bool{}
-	titleCache := map[string]string{}
-
-	for _, line := range bytes.Split(contentOut, []byte("\n")) {
-		if len(line) == 0 {
-			continue
-		}
-		var ev struct {
-			Type string `json:"type"`
-			Data struct {
-				Path  struct{ Text string `json:"text"` } `json:"path"`
-				Lines struct{ Text string `json:"text"` } `json:"lines"`
-				LineNumber int `json:"line_number"`
-			} `json:"data"`
-		}
-		if json.Unmarshal(line, &ev) != nil || ev.Type != "match" {
-			continue
-		}
-		rel := filepath.ToSlash(ev.Data.Path.Text)
-		id, title := r.pageIDAndTitle(rel, contentRoot, titleCache)
-		snippet := strings.TrimSpace(ev.Data.Lines.Text)
-		if len(snippet) > 200 {
-			snippet = snippet[:200] + "…"
-		}
-		key := id + "|" + snippet
-		if seenContent[key] {
-			continue
-		}
-		seenContent[key] = true
-		results = append(results, SearchResult{
-			PageID: id, Title: title, Path: rel,
-			Line: ev.Data.LineNumber, Snippet: snippet,
-		})
-		if len(results) >= 50 {
-			return results, nil
-		}
-	}
-
-	qLower := strings.ToLower(q)
-	for _, ln := range bytes.Split(pathOut, []byte("\n")) {
-		if len(ln) == 0 {
-			continue
-		}
-		rel := filepath.ToSlash(string(ln))
-		if !strings.Contains(strings.ToLower(rel), qLower) {
-			continue
-		}
-		id, title := r.pageIDAndTitle(rel, contentRoot, titleCache)
-		results = append(results, SearchResult{
-			PageID: id, Title: title, Path: rel,
-			Line: 0, Snippet: "路径匹配: " + rel,
-		})
-		if len(results) >= 50 {
-			return results, nil
-		}
-	}
-	return results, nil
-}
-
-func (r *Repo) searchWithWalk(ctx context.Context, q, contentRoot string) ([]SearchResult, error) {
-	qLower := strings.ToLower(q)
-	out := []SearchResult{}
-	titleCache := map[string]string{}
-	err := filepath.WalkDir(contentRoot, func(path string, de os.DirEntry, err error) error {
-		if err != nil || de.IsDir() {
-			if de != nil && de.IsDir() && (strings.HasPrefix(de.Name(), ".") || de.Name() == "assets") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(de.Name(), ".md") {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		if len(data) > 200_000 {
-			data = data[:200_000]
-		}
-		doc, err := ParsePage(data)
-		if err != nil {
-			return nil
-		}
-		rel, _ := filepath.Rel(contentRoot, path)
-		rel = filepath.ToSlash(rel)
-		id, title := r.pageIDAndTitle(rel, contentRoot, titleCache)
-		if strings.Contains(strings.ToLower(title), qLower) || strings.Contains(strings.ToLower(rel), qLower) {
-			out = append(out, SearchResult{PageID: id, Title: title, Path: rel, Line: 0, Snippet: "标题 / 路径匹配"})
-		}
-		for i, line := range strings.Split(doc.Body, "\n") {
-			if strings.Contains(strings.ToLower(line), qLower) {
-				sn := strings.TrimSpace(line)
-				if len(sn) > 200 {
-					sn = sn[:200] + "…"
-				}
-				out = append(out, SearchResult{PageID: id, Title: title, Path: rel, Line: i + 1, Snippet: sn})
-				if len(out) >= 50 {
-					return io.EOF
-				}
-			}
-		}
-		return nil
-	})
-	if err != nil && err != io.EOF {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (r *Repo) pageIDAndTitle(rel, contentRoot string, cache map[string]string) (string, string) {
-	var id string
-	if strings.HasSuffix(rel, "/_index.md") {
-		id = strings.TrimSuffix(rel, "/_index.md")
-	} else {
-		id = strings.TrimSuffix(rel, ".md")
-	}
-	if t, ok := cache[id]; ok {
-		return id, t
-	}
-	abs := filepath.Join(contentRoot, filepath.FromSlash(rel))
-	title := id
-	if data, err := os.ReadFile(abs); err == nil {
-		if doc, err := ParsePage(data); err == nil {
-			if fmTitle, ok := doc.FrontMatter["title"].(string); ok && fmTitle != "" {
-				title = fmTitle
-			}
-		}
-	}
-	cache[id] = title
-	return id, title
-}
-
 // UpdateTitle changes the page title front matter without renaming the file.
-// Cleaner than RenamePage — keeps ids stable, links don't break.
+// The id stays the same, so links to the page keep working.
 func (r *Repo) UpdateTitle(ctx context.Context, id, newTitle string, u *auth.User) (string, error) {
 	if newTitle == "" {
 		return "", ErrBadPath
@@ -961,9 +842,9 @@ func (r *Repo) UpdateTitle(ctx context.Context, id, newTitle string, u *auth.Use
 
 // ListAssets returns filenames under <page>/assets/.
 func (r *Repo) ListAssets(ctx context.Context, pageID string) ([]string, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	abs, err := r.resolvePath(filepath.Join(pageID, "assets"))
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	abs, err := r.resolvePath(assetsDir(pageID))
 	if err != nil { return nil, err }
 	ents, err := os.ReadDir(abs)
 	if err != nil {
@@ -979,19 +860,13 @@ func (r *Repo) ListAssets(ctx context.Context, pageID string) ([]string, error) 
 	return out, nil
 }
 
-// ReadAsset streams a single asset. Name is the raw filename inside <page>/assets/.
-func (r *Repo) ReadAsset(ctx context.Context, pageID, name string) ([]byte, string, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if strings.Contains(name, "/") || strings.Contains(name, "..") {
-		return nil, "", ErrBadPath
+// AssetPath returns the on-disk path of a file inside <page>/assets/. Name is the raw filename.
+// No lock: it only validates the path; serving happens on an open file descriptor.
+func (r *Repo) AssetPath(pageID, name string) (string, error) {
+	if strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
+		return "", ErrBadPath
 	}
-	abs, err := r.resolvePath(filepath.Join(pageID, "assets", name))
-	if err != nil { return nil, "", err }
-	data, err := os.ReadFile(abs)
-	if err != nil { return nil, "", err }
-	mime := http.DetectContentType(data)
-	return data, mime, nil
+	return r.resolvePath(filepath.Join(assetsDir(pageID), name))
 }
 
 

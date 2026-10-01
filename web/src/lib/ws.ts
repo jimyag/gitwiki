@@ -16,8 +16,14 @@ export function connectPresence(slug: string, pageId: string) {
       const st = useStore.getState();
       if (msg.type === "peers") {
         st.setPeers(msg.peers || []);
-      } else if (msg.type === "saved") {
-        if (msg.sha && msg.user) st.onSaved(msg.user, msg.sha);
+      } else if (msg.type === "changed") {
+        // Someone (or a commit pulled from GitHub: no user) changed pages: the tree may differ,
+        // and the open page may now be stale.
+        void st.refreshTree();
+        const pages: string[] = msg.pages ?? [];
+        if (msg.user !== st.user?.login && st.currentPageId && pages.includes(st.currentPageId)) {
+          st.onSaved(msg.user ?? "");
+        }
       } else if (msg.type === "cursor") {
         st.setRemoteCursor(msg.user, {
           user: msg.user,
@@ -28,6 +34,8 @@ export function connectPresence(slug: string, pageId: string) {
         } as RemoteCursor);
       } else if (msg.type === "cursor-left") {
         st.removeRemoteCursor(msg.user);
+      } else if (msg.type === "sync") {
+        st.setSyncError(msg.error || null);
       }
     } catch {}
   };

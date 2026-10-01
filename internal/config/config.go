@@ -14,6 +14,7 @@ type Repo struct {
 	Workdir    string `yaml:"workdir"`
 	ContentDir string `yaml:"content_dir"`
 	Title      string `yaml:"title"`
+	SiteURL    string `yaml:"site_url"` // optional: the published Hugo site, for "在站点中查看" links
 }
 
 type Config struct {

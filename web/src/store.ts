@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { PageMeta, Repo, User } from "./lib/api";
+import { api, type PageMeta, type Repo, type User } from "./lib/api";
 
 export type SaveStatus = "idle" | "saving" | "saved" | "conflict" | "error";
 
@@ -30,9 +30,11 @@ interface State {
   repos: Repo[];
   currentRepo: string | null;
   tree: PageMeta | null;
+  refreshTree(): Promise<void>;
   currentPageId: string | null;
+  // Bumped to make the editor refetch the current page (part of its React key).
+  pageRev: number;
   baseSha: string;
-  isBundle: boolean;
   dirty: boolean;
   saveStatus: SaveStatus;
   peers: Peer[];
@@ -40,23 +42,42 @@ interface State {
   setRemoteCursor(user: string, c: RemoteCursor): void;
   removeRemoteCursor(user: string): void;
   clearRemoteCursors(): void;
+  // Who changed the open page since it loaded ("" for an edit pulled from GitHub); null if nobody.
   lastSavedBy: string | null;
-  lastSavedSha: string | null;
+  // Why the server's background push to GitHub is failing; null once origin has everything.
+  syncError: string | null;
+  setSyncError(e: string | null): void;
+  navOpen: boolean; // sidebar drawer on narrow screens
+  setNavOpen(open: boolean): void;
+  searchOpen: boolean;
+  setSearchOpen(open: boolean): void;
+  tagsOpen: string | null; // the tag browser: null closed, "" all tags, else the selected tag
+  setTagsOpen(tag: string | null): void;
   setUser(u: User | null): void;
   setRepos(r: Repo[]): void;
   setCurrentRepo(s: string | null): void;
   setTree(t: PageMeta | null): void;
-  openPage(id: string, base: string, isBundle: boolean): void;
-  closePage(): void;
+  // The editor loads content and base_sha itself; callers only pick the page. Both return false
+  // when the user chose to stay on a page with unsaved changes.
+  openPage(id: string): boolean;
+  // Shows repo + page in one update (used for URLs), so the URL sync never sees a half step.
+  goTo(repo: string, page: string): boolean;
+  reloadPage(): void;
   markDirty(d: boolean): void;
   setSaveStatus(s: SaveStatus): void;
   setPeers(p: Peer[]): void;
-  onSaved(by: string, sha: string): void;
-  clearSavedBanner(): void;
+  onSaved(by: string): void;
   bumpBaseSha(sha: string): void;
 }
 
-export const useStore = create<State>((set) => ({
+// Unsaved edits also sit in a local draft, but leaving still deserves a question.
+function leaveOk(dirty: boolean): boolean {
+  return !dirty || confirm("这个页面有未保存的修改。离开后，下次打开它时可以从本机草稿恢复。确定离开？");
+}
+
+const pageReset = { baseSha: "", dirty: false, saveStatus: "idle" as SaveStatus, lastSavedBy: null, navOpen: false };
+
+export const useStore = create<State>((set, get) => ({
   user: null,
   uploads: [],
   addUpload: (u) => set(s => ({ uploads: [...s.uploads, u] })),
@@ -67,9 +88,15 @@ export const useStore = create<State>((set) => ({
   repos: [],
   currentRepo: null,
   tree: null,
+  refreshTree: async () => {
+    const repo = get().currentRepo;
+    if (!repo) return;
+    const tree = await api.pageTree(repo);
+    if (get().currentRepo === repo) set({ tree });
+  },
   currentPageId: null,
+  pageRev: 0,
   baseSha: "",
-  isBundle: false,
   dirty: false,
   saveStatus: "idle",
   peers: [],
@@ -82,17 +109,40 @@ export const useStore = create<State>((set) => ({
   }),
   clearRemoteCursors: () => set({ remoteCursors: {} }),
   lastSavedBy: null,
-  lastSavedSha: null,
+  syncError: null,
+  setSyncError: (syncError) => set({ syncError }),
+  navOpen: false,
+  setNavOpen: (navOpen) => set({ navOpen }),
+  searchOpen: false,
+  setSearchOpen: (searchOpen) => set({ searchOpen }),
+  tagsOpen: null,
+  setTagsOpen: (tagsOpen) => set({ tagsOpen }),
   setUser: (user) => set({ user }),
   setRepos: (repos) => set({ repos }),
   setCurrentRepo: (currentRepo) => set({ currentRepo, tree: null, currentPageId: null, baseSha: "" }),
   setTree: (tree) => set({ tree }),
-  openPage: (currentPageId, baseSha, isBundle) => set({ currentPageId, baseSha, isBundle, dirty: false, saveStatus: "idle" }),
-  closePage: () => set({ currentPageId: null, baseSha: "", isBundle: false, dirty: false, saveStatus: "idle", peers: [], remoteCursors: {} }),
+  openPage: (currentPageId) => {
+    const s = get();
+    if (currentPageId === s.currentPageId) return true;
+    if (!leaveOk(s.dirty)) return false;
+    set({ currentPageId, ...pageReset });
+    return true;
+  },
+  goTo: (repo, currentPageId) => {
+    const s = get();
+    if (repo === s.currentRepo && currentPageId === s.currentPageId) return true;
+    if (!leaveOk(s.dirty)) return false;
+    set({ ...(repo !== s.currentRepo ? { currentRepo: repo, tree: null } : {}), currentPageId, ...pageReset });
+    return true;
+  },
+  reloadPage: () => set(s => ({ pageRev: s.pageRev + 1, dirty: false, saveStatus: "idle", lastSavedBy: null })),
   markDirty: (dirty) => set({ dirty }),
   setSaveStatus: (saveStatus) => set({ saveStatus }),
   setPeers: (peers) => set({ peers }),
-  onSaved: (lastSavedBy, lastSavedSha) => set({ lastSavedBy, lastSavedSha }),
-  clearSavedBanner: () => set({ lastSavedBy: null, lastSavedSha: null }),
+  onSaved: (lastSavedBy) => set({ lastSavedBy }),
   bumpBaseSha: (baseSha) => set({ baseSha }),
 }));
+
+// Whether the user may change the open repo (push access on GitHub).
+export const useCanWrite = () => useStore(s => s.repos.find(r => r.slug === s.currentRepo)?.can_write ?? false);
+export const useRepoInfo = () => useStore(s => s.repos.find(r => r.slug === s.currentRepo));

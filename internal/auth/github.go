@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/jimyag/gitwiki/internal/config"
 )
@@ -22,10 +24,29 @@ type User struct {
 
 type Store struct {
 	cfg *config.Config
+
+	permMu sync.Mutex
+	perms  map[string]permEntry // login + "\x00" + github repo
 }
 
+// Access is what a user may do with a repo: Read (GitHub "pull") lets them browse the wiki,
+// Write (GitHub "push") lets them change it.
+type Access struct{ Read, Write bool }
+
+type permEntry struct {
+	access Access
+	at     time.Time
+}
+
+// permTTL is how long a permission answer is reused: every repo request checks it, and a
+// revoked collaborator keeps access for at most this long.
+const permTTL = 5 * time.Minute
+
+// githubAPI is a variable so tests can point it at a fake.
+var githubAPI = "https://api.github.com"
+
 func NewStore(cfg *config.Config) *Store {
-	return &Store{cfg: cfg}
+	return &Store{cfg: cfg, perms: map[string]permEntry{}}
 }
 
 // BeginAuth redirects to GitHub authorize page. state is returned via the cookie-less
@@ -41,6 +62,10 @@ func (s *Store) BeginAuth(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		MaxAge:   300,
 	})
+	// Where to land after login (the page a logged-out reader opened).
+	if next := r.URL.Query().Get("next"); localPath(next) {
+		http.SetCookie(w, &http.Cookie{Name: "oauth_next", Value: url.QueryEscape(next), Path: "/", HttpOnly: true, MaxAge: 300})
+	}
 	q := url.Values{
 		"client_id": {s.cfg.Github.ClientID},
 		"state":     {state},
@@ -72,35 +97,72 @@ func (s *Store) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	u.Token = token
 	setSession(w, s.cfg.SessionSecret, u)
-	http.Redirect(w, r, "/", http.StatusFound)
+	dest := "/"
+	if c, err := r.Cookie("oauth_next"); err == nil {
+		if next, err := url.QueryUnescape(c.Value); err == nil && localPath(next) {
+			dest = next
+		}
+		http.SetCookie(w, &http.Cookie{Name: "oauth_next", Path: "/", MaxAge: -1})
+	}
+	http.Redirect(w, r, dest, http.StatusFound)
+}
+
+// localPath accepts only same-site paths, so the post-login redirect cannot be bounced
+// to another host ("//evil", "/\evil", "https://…").
+func localPath(p string) bool {
+	return strings.HasPrefix(p, "/") && !strings.HasPrefix(p, "//") && !strings.ContainsAny(p, "\\\r\n")
 }
 
 func (s *Store) CurrentUser(r *http.Request) *User {
 	return readSession(r, s.cfg.SessionSecret)
 }
 
-// CanPush reports whether user's token grants push on repo "owner/name".
-func (s *Store) CanPush(ctx context.Context, u *User, githubRepo string) (bool, error) {
-	req, _ := http.NewRequestWithContext(ctx, "GET", "https://api.github.com/repos/"+githubRepo, nil)
-	req.Header.Set("Authorization", "Bearer "+u.Token)
+// Access reports what the user's token may do with repo "owner/name".
+// Answers are cached per user and repo for permTTL; errors are not cached.
+func (s *Store) Access(ctx context.Context, u *User, githubRepo string) (Access, error) {
+	key := u.Login + "\x00" + githubRepo
+	s.permMu.Lock()
+	e, ok := s.perms[key]
+	s.permMu.Unlock()
+	if ok && time.Since(e.at) < permTTL {
+		return e.access, nil
+	}
+	a, err := fetchAccess(ctx, u.Token, githubRepo)
+	if err != nil {
+		return Access{}, err
+	}
+	s.permMu.Lock()
+	s.perms[key] = permEntry{access: a, at: time.Now()}
+	s.permMu.Unlock()
+	return a, nil
+}
+
+func fetchAccess(ctx context.Context, token, githubRepo string) (Access, error) {
+	req, _ := http.NewRequestWithContext(ctx, "GET", githubAPI+"/repos/"+githubRepo, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return false, err
+		return Access{}, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return false, nil
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusUnauthorized, http.StatusNotFound: // bad token, or repo invisible to it
+		return Access{}, nil
+	default: // e.g. rate limited: an error, so a GitHub hiccup is not cached as "no access"
+		return Access{}, fmt.Errorf("github repo %s: %s", githubRepo, resp.Status)
 	}
 	var body struct {
 		Permissions struct {
+			Pull bool `json:"pull"`
 			Push bool `json:"push"`
 		} `json:"permissions"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return false, err
+		return Access{}, err
 	}
-	return body.Permissions.Push, nil
+	return Access{Read: body.Permissions.Pull || body.Permissions.Push, Write: body.Permissions.Push}, nil
 }
 
 func (s *Store) exchangeCode(ctx context.Context, code string) (string, error) {

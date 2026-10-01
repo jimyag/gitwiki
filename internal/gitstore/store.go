@@ -1,5 +1,5 @@
 // Package gitstore manages per-repo local working copies and the save path:
-// pull -> write -> (merge on conflict) -> commit as user -> push.
+// write -> (merge on conflict) -> commit as user; a background loop pushes to origin (push.go).
 package gitstore
 
 import (
@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jimyag/gitwiki/internal/auth"
@@ -27,7 +28,13 @@ var (
 
 type Repo struct {
 	cfg config.Repo
-	mu  sync.Mutex // serializes pull/commit/push per repo
+	// mu guards the working copy and HEAD: writers Lock (local git only, pushing is in push.go),
+	// readers share RLock.
+	mu     sync.RWMutex
+	cloned atomic.Bool // lets EnsureCloned skip the lock once the checkout exists
+
+	pushKick chan struct{}          // wakes the push loop; buffered(1) so requests coalesce
+	token    atomic.Pointer[string] // newest writer's GitHub token, used by the next push
 
 	// lastRecentCreate dedups rapid duplicate create requests (e.g. user double-clicks
 	// "create" while a network roundtrip is outstanding). Keyed by parentID+title.
@@ -56,9 +63,13 @@ func (m *Manager) Get(slug string) *Repo { return m.repos[slug] }
 
 // EnsureCloned makes sure workdir is a git checkout of cfg.Github at cfg.Branch.
 func (r *Repo) EnsureCloned(ctx context.Context, token string) error {
+	if r.cloned.Load() {
+		return nil
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, err := os.Stat(filepath.Join(r.cfg.Workdir, ".git")); err == nil {
+		r.cloned.Store(true)
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(r.cfg.Workdir), 0o755); err != nil {
@@ -72,6 +83,7 @@ func (r *Repo) EnsureCloned(ctx context.Context, token string) error {
 	if err != nil {
 		return fmt.Errorf("git clone: %w: %s", err, out)
 	}
+	r.cloned.Store(true)
 	return nil
 }
 
@@ -289,9 +301,10 @@ func (r *Repo) merge3(ctx context.Context, rel, baseSHA, currentSHA, theirs stri
 	}
 
 	// merge-file [options] current-file base-file other-file
-	// Writes merged result (with markers if conflict) into current-file.
+	// Writes merged result (with markers if conflict) into current-file. The labels end up in
+	// the text the user resolves, so they say whose side is whose.
 	cmd := exec.CommandContext(ctx, "git", "merge-file",
-		"-L", "current", "-L", "base", "-L", "yours",
+		"-L", "别人的修改", "-L", "修改前", "-L", "你的修改",
 		curPath, basePath, theirPath)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	runErr := cmd.Run()
