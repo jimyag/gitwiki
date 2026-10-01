@@ -8,3 +8,5 @@ web/bun.lockb
 .DS_Store
 
 internal/web/dist
+coverage.txt
+/dist

@@ -13,25 +13,41 @@ tasks:
     cmds: [go run ./cmd/gitwiki -config config.yaml]
 
   dev-frontend:
-    cmds: [bun --cwd web run dev]
+    cmds: [cd web && bun run dev]
 
-  build:
-    desc: Build frontend and backend binary
+  deps:
+    desc: Install development tools
     cmds:
-      - bun --cwd web install --frozen-lockfile
-      - bun --cwd web run build
-      - go build -trimpath -ldflags "-s -w" -o gitwiki ./cmd/gitwiki
+      - cd web && bun install
+
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - golangci-lint run ./...
 
   test:
-    desc: Run backend tests
-    cmds: [go test ./...]
+    desc: Run backend tests with coverage
+    cmds:
+      - go test -race -coverprofile=coverage.txt ./...
 
   check:
     desc: Typecheck + vet
     cmds:
-      - bun --cwd web run typecheck
+      - cd web && bun run typecheck
       - go vet ./...
+
+  build:
+    desc: Build frontend and backend binary
+    cmds:
+      - cd web && bun install --frozen-lockfile
+      - cd web && bun run build
+      - go build -trimpath -ldflags "-s -w" -o gitwiki ./cmd/gitwiki
+
+  release-snapshot:
+    desc: Run GoReleaser in snapshot mode to validate release artifacts locally
+    cmds:
+      - goreleaser release --snapshot --clean
 
   clean:
     cmds:
-      - rm -rf web/dist web/node_modules gitwiki
+      - rm -rf web/dist web/node_modules gitwiki coverage.txt dist

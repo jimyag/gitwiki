@@ -1,0 +1,45 @@
+version: 2
+
+project_name: gitwiki
+
+# 先把前端构建产物放到 internal/web/dist，go:embed 才能打进二进制
+before:
+  hooks:
+    - sh -c "cd web && bun install --frozen-lockfile && bun run build"   # vite 产物直接输出到 internal/web/dist
+
+builds:
+  - id: gitwiki
+    main: ./cmd/gitwiki/main.go
+    binary: gitwiki
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+      - -buildvcs=true
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: default
+    formats:
+      - binary
+    name_template: "{{ .Binary }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  github:
+    owner: jimyag
+    name: gitwiki
+  mode: replace
+
+changelog:
+  use: git
