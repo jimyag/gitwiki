@@ -136,3 +136,10 @@ body {
 ::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.22); }
 
 ::selection { background: rgb(5 150 105 / 0.15); }
+
+@media print {
+  /* 打印只要正文：侧栏、顶栏、面板、toast 都不进纸张。 */
+  aside, header, #page-actions, [data-sonner-toaster], div[class*="z-30"] { display: none !important; }
+  main, article { overflow: visible !important; max-height: none !important; }
+  body { background: white; }
+}

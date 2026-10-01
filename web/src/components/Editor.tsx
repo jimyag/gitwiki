@@ -6,14 +6,17 @@ import { pagePath } from "../lib/tree";
 import { HOME, pathFor } from "../lib/route";
 import { clearDraft, loadDraft, saveDraft, type Draft } from "../lib/draft";
 import { formatRelativeTime } from "../lib/format";
+import { pushRecent } from "../lib/recents";
+import { sendEditing } from "../lib/ws";
 import { connectPresence, disconnectPresence } from "../lib/ws";
 import { toast } from "sonner";
-import { ExternalLink, Eye, History, Link2, Paperclip, Pencil, Save, Tag } from "lucide-react";
+import { ExternalLink, Eye, History, Link2, Paperclip, Pencil, Save, Tag, MessageSquare } from "lucide-react";
 import { DiffView } from "./editor/DiffView";
 import { AssetsPanel } from "./AssetsPanel";
 import { HistoryPanel } from "./HistoryPanel";
 import { PropertiesBar } from "./PropertiesBar";
 import { RecentChanges } from "./RecentChanges";
+import { CommentsPanel } from "./CommentsPanel";
 import { Preview, type Heading } from "./Preview";
 import { Toc } from "./Toc";
 import { btnGhost, btnOutline, btnPrimary, iconBtn } from "./ui";
@@ -65,7 +68,8 @@ export function Editor() {
   const [titleInput, setTitleInput] = useState("");
   const [meta, setMeta] = useState<Meta>(emptyMeta);
   const [stored, setStored] = useState<Draft | null>(null); // an earlier session's unsaved edits
-  const [panel, setPanel] = useState<"assets" | "history" | null>(null);
+  const [panel, setPanel] = useState<"assets" | "history" | "comments" | null>(null);
+  const user = useStore(s => s.user);
   const [backlinks, setBacklinks] = useState<PageRef[]>([]);
   // The TopBar renders an empty #page-actions slot; this page's buttons are portaled into it.
   const [actionsSlot, setActionsSlot] = useState<HTMLElement | null>(null);
@@ -86,6 +90,7 @@ export function Editor() {
         const pc = await api.readPage(currentRepo, pageId);
         if (cancelled) return;
         applyLoaded(pc);
+        pushRecent(currentRepo, pageId, pc.title || pageId);
         offerDraft(pc);
       } catch (e: any) {
         if (cancelled) return;
@@ -109,6 +114,15 @@ export function Editor() {
       disconnectPresence();
     };
   }, [currentRepo, pageId]);
+
+  const peers = useStore(s => s.peers);
+  const othersEditing = peers.filter(p => p.editing && p.user !== useStore.getState().user?.login);
+
+  // Tell the others when this tab's editor opens/closes, so their edit button can warn.
+  useEffect(() => {
+    sendEditing(mode === "edit");
+    return () => sendEditing(false);
+  }, [mode, currentRepo, pageId]);
 
   function applyLoaded(pc: PageContent) {
     setLoaded({
@@ -283,7 +297,15 @@ export function Editor() {
               </button>
             </>
           ) : canWrite && (
-            <button onClick={() => setMode("edit")} disabled={loaded === null} className={btnOutline}>
+            <button
+              onClick={() => {
+                if (othersEditing.length > 0 &&
+                    !confirm(othersEditing.map(p => p.name || p.user).join("、") + " 正在编辑这一页。现在打开编辑器，你们的修改保存时会自动合并，改到同一处时需要人工挑。继续？")) return;
+                setMode("edit");
+              }}
+              disabled={loaded === null}
+              className={btnOutline}
+            >
               <Pencil className="size-3.5" />编辑
             </button>
           )}
@@ -298,12 +320,20 @@ export function Editor() {
           <button onClick={() => setPanel("assets")} title="附件" className={iconBtn}>
             <Paperclip className="size-4" />
           </button>
+          {user && (
+            <button onClick={() => setPanel("comments")} title="评论" className={iconBtn}>
+              <MessageSquare className="size-4" />
+            </button>
+          )}
         </>,
         actionsSlot,
       )}
 
       {panel === "assets" && (
         <AssetsPanel body={draft ?? loaded?.body ?? ""} canWrite={canWrite} onUpload={uploadAsset} onClose={() => setPanel(null)} />
+      )}
+      {panel === "comments" && currentRepo && pageId && user && (
+        <CommentsPanel repo={currentRepo} pageId={pageId} body={draft ?? loaded?.body ?? ""} onClose={() => setPanel(null)} />
       )}
       {panel === "history" && loaded && (
         <HistoryPanel

@@ -272,8 +272,6 @@ func (r *Repo) Save(ctx context.Context, rel, content, baseSHA, message string, 
 	return sha, nil
 }
 
-
-
 // merge3 performs a 3-way merge using `git merge-file`. Returns merged text
 // and whether conflicts exist (text then still contains conflict markers).
 func (r *Repo) merge3(ctx context.Context, rel, baseSHA, currentSHA, theirs string) (string, bool, error) {
@@ -288,8 +286,8 @@ func (r *Repo) merge3(ctx context.Context, rel, baseSHA, currentSHA, theirs stri
 	theirPath := filepath.Join(tmp, "theirs")
 
 	repoRel := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, rel))
-	baseContent, _ := r.gitOut(ctx, "show", baseSHA+":"+repoRel)     // may not exist for new file
-	curContent, _ := r.gitOut(ctx, "show", currentSHA+":"+repoRel)   // should exist if head has it
+	baseContent, _ := r.gitOut(ctx, "show", baseSHA+":"+repoRel)   // may not exist for new file
+	curContent, _ := r.gitOut(ctx, "show", currentSHA+":"+repoRel) // should exist if head has it
 	if err := os.WriteFile(basePath, baseContent, 0o600); err != nil {
 		return "", false, err
 	}
@@ -347,4 +345,76 @@ func (r *Repo) gitOut(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", full...)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	return cmd.Output()
+}
+
+// ReadRaw returns the file at rel inside the content dir. Unlike Read it reports the
+// absence of the file cleanly instead of as an os error.
+func (r *Repo) ReadRaw(rel string) (string, bool, error) {
+	abs, err := r.resolvePath(rel)
+	if err != nil {
+		return "", false, err
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	data, err := os.ReadFile(abs)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return string(data), true, nil
+}
+
+// SaveRaw writes rel as a commit authored by u; the caller gets the previous HEAD (which
+// is also its merge base) back at HEAD. Used for files that are not pages (e.g. comments).
+func (r *Repo) SaveRaw(rel, content, baseSHA, message string, u *auth.User) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	abs, err := r.resolvePath(rel)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
+		return "", err
+	}
+	if err := r.git(context.TODO(), "add", "--", filepath.ToSlash(filepath.Join(r.cfg.ContentDir, rel))); err != nil {
+		return "", err
+	}
+	if err := r.git(context.TODO(), "diff", "--cached", "--quiet"); err == nil {
+		return r.headSHA(context.TODO())
+	}
+	if err := r.commitAs(context.TODO(), u, message); err != nil {
+		return "", err
+	}
+	sha, err := r.headSHA(context.TODO())
+	if err != nil {
+		return "", err
+	}
+	r.schedulePush(u.Token)
+	return sha, nil
+}
+
+// HeadSHA is the current commit of the working copy.
+func (r *Repo) HeadSHA() (string, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.headSHA(context.TODO())
+}
+
+// Slug is the repo's URL slug, for keying non-git state (e.g. pending comments).
+func (r *Repo) Slug() string { return r.cfg.Slug }
+
+// ReadAssetFile opens the stored bytes of one of a page's assets.
+func (r *Repo) ReadAssetFile(ctx context.Context, pageID, name string) (*os.File, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p, err := r.AssetPath(pageID, name)
+	if err != nil {
+		return nil, err
+	}
+	return os.Open(p)
 }

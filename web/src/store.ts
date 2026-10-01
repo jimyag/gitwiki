@@ -3,7 +3,7 @@ import { api, type PageMeta, type Repo, type User } from "./lib/api";
 
 export type SaveStatus = "idle" | "saving" | "saved" | "conflict" | "error";
 
-export interface Peer { user: string; name: string; page: string; since: number }
+export interface Peer { user: string; name: string; page: string; since: number; editing?: boolean }
 
 export interface RemoteCursor {
   user: string;
@@ -38,12 +38,19 @@ interface State {
   dirty: boolean;
   saveStatus: SaveStatus;
   peers: Peer[];
+  setPeerEditing(user: string, editing: boolean): void;
   remoteCursors: Record<string, RemoteCursor>;
   setRemoteCursor(user: string, c: RemoteCursor): void;
   removeRemoteCursor(user: string): void;
   clearRemoteCursors(): void;
   // Who changed the open page since it loaded ("" for an edit pulled from GitHub); null if nobody.
   lastSavedBy: string | null;
+  // Incremented when a "comments" ws message arrives for the open page; the panel refetches.
+  commentsRev: number;
+  bumpCommentsRev(): void;
+  // Pages (any peer has commented on) for the sidebar comment badge.
+  commentPeers: Record<string, string[]>;
+  setCommentPeers(page: string, logins: string[]): void;
   // Why the server's background push to GitHub is failing; null once origin has everything.
   syncError: string | null;
   setSyncError(e: string | null): void;
@@ -75,7 +82,7 @@ function leaveOk(dirty: boolean): boolean {
   return !dirty || confirm("这个页面有未保存的修改。离开后，下次打开它时可以从本机草稿恢复。确定离开？");
 }
 
-const pageReset = { baseSha: "", dirty: false, saveStatus: "idle" as SaveStatus, lastSavedBy: null, navOpen: false };
+const pageReset = { baseSha: "", dirty: false, saveStatus: "idle" as SaveStatus, lastSavedBy: null, navOpen: false, commentPeers: {} };
 
 export const useStore = create<State>((set, get) => ({
   user: null,
@@ -91,8 +98,14 @@ export const useStore = create<State>((set, get) => ({
   refreshTree: async () => {
     const repo = get().currentRepo;
     if (!repo) return;
-    const tree = await api.pageTree(repo);
-    if (get().currentRepo === repo) set({ tree });
+    try {
+      const tree = await api.pageTree(repo);
+      if (get().currentRepo === repo) set({ tree });
+    } catch (e: any) {
+      // Anonymous visitor on a repo that isn't read_public: nothing to show, the editor
+      // will surface a login hint instead of looping.
+      if (e?.status !== 401 && e?.status !== 403) throw e;
+    }
   },
   currentPageId: null,
   pageRev: 0,
@@ -139,10 +152,37 @@ export const useStore = create<State>((set, get) => ({
   markDirty: (dirty) => set({ dirty }),
   setSaveStatus: (saveStatus) => set({ saveStatus }),
   setPeers: (peers) => set({ peers }),
+  setPeerEditing: (user, editing) => set(s => ({
+    peers: s.peers.map(p => p.user === user ? { ...p, editing } : p),
+  })),
+  commentsRev: 0,
+  bumpCommentsRev: () => set(s => ({ commentsRev: s.commentsRev + 1 })),
+  commentPeers: {},
+  setCommentPeers: (page, logins) => set(s => ({
+    commentPeers: { ...s.commentPeers, [page]: logins },
+  })),
   onSaved: (lastSavedBy) => set({ lastSavedBy }),
   bumpBaseSha: (baseSha) => set({ baseSha }),
 }));
 
-// Whether the user may change the open repo (push access on GitHub).
-export const useCanWrite = () => useStore(s => s.repos.find(r => r.slug === s.currentRepo)?.can_write ?? false);
-export const useRepoInfo = () => useStore(s => s.repos.find(r => r.slug === s.currentRepo));
+// Whether the user may change the open repo. With read_public the server does not list the
+// repo for logged-out readers; that absence is read-only.
+export const useCanWrite = () => useStore(s => !!s.user && (s.repos.find(r => r.slug === s.currentRepo)?.can_write ?? false));
+// urlRepo: when the open repo isn't in the (writable) repos list — either the user lacks push
+// access or is logged out on a read_public repo — we still have a slug from the URL.
+// A shared placeholder object keeps zustand's Object.is from re-rendering every store update
+// (a fresh object each call is an infinite loop).
+const urlRepo = new Map<string, Repo>();
+const urlRepoFor = (slug: string): Repo => {
+  let r = urlRepo.get(slug);
+  if (!r) {
+    r = { slug, title: slug, can_write: false };
+    urlRepo.set(slug, r);
+  }
+  return r;
+};
+export const useRepoInfo = () => useStore(s => {
+  const found = s.repos.find(r => r.slug === s.currentRepo);
+  if (found) return found;
+  return s.currentRepo ? urlRepoFor(s.currentRepo) : undefined;
+});

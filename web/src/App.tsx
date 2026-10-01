@@ -26,14 +26,13 @@ export function App() {
     (async () => {
       try {
         const me = await api.me();
-        if (!me.user) return;
         setUser(me.user);
         const repos = me.repos ?? [];
         setRepos(repos);
-        // Open what the URL names; an unknown or inaccessible repo falls back to the first one.
-        // Picking a repo is enough: the effect below loads its tree.
+        // Open what the URL names. Read follows the URL slug: it works for logged-out
+        // visitors on read_public repos; unknown slugs will fail at the tree fetch below.
         const want = parseLocation();
-        const repo = repos.find(r => r.slug === want.repo)?.slug ?? repos[0]?.slug;
+        const repo = want.repo ?? repos[0]?.slug ?? null;
         if (repo) {
           const page = repo === want.repo ? want.page : HOME;
           history.replaceState(null, "", pathFor(repo, page) + (repo === want.repo ? location.hash : ""));
@@ -79,8 +78,11 @@ export function App() {
     if (currentRepo) void useStore.getState().refreshTree();
   }, [currentRepo]);
 
-  if (!user) {
-    return authChecked ? <LoginScreen /> : <BootShell />;
+  if (!user && !authChecked) {
+    return <BootShell />;
+  }
+  if (!user && authChecked && !currentRepo) {
+    return <LoginScreen />;
   }
 
   return (

@@ -2,7 +2,7 @@
 // (headings, lists, links, image upload, a table size picker …). Its own preview is off: the
 // reading view is gitwiki's. Everything ships with the app; nothing is fetched from a CDN.
 // Loaded lazily by Editor, so readers never download it.
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { MdEditor, NormalToolbar, config, type Insert, type ToolbarNames } from "md-editor-rt";
 import { Prec } from "@codemirror/state";
 import type { Completion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
@@ -13,6 +13,7 @@ import Cropper from "cropperjs";
 import "cropperjs/dist/cropper.css";
 import "md-editor-rt/lib/style.css";
 import { gitwikiExtensions } from "./codemirror";
+import { onHtmlPaste } from "../../lib/paste";
 import { useStore } from "../../store";
 import { flattenTree } from "../../lib/tree";
 import { HOME, linkFor } from "../../lib/route";
@@ -135,7 +136,12 @@ export default function MarkdownEditor({ value, onChange, onUpload }: {
   onChange(v: string): void;
   onUpload(file: File): Promise<string>; // resolves to the path to embed, e.g. "assets/x.png"
 }) {
+  // Rich-text paste (Word/Feishu/web pages) becomes markdown; plain text and files
+  // (screenshots) keep going to the editor's own handler.
+  const wrapRef = useRef<HTMLDivElement>(null);
+  useEffect(() => (wrapRef.current ? onHtmlPaste(wrapRef.current) : undefined), []);
   return (
+    <div ref={wrapRef} className="h-full min-h-0">
     <MdEditor
       className="gitwiki-md"
       value={value}
@@ -160,5 +166,6 @@ export default function MarkdownEditor({ value, onChange, onUpload }: {
         done(results.flatMap(r => (r.status === "fulfilled" ? [r.value] : [])));
       }}
     />
+    </div>
   );
 }

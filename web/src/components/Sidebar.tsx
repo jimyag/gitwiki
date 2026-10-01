@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, type CSSProperties, type DragEvent } from 
 import { createPortal } from "react-dom";
 import { useCanWrite, useStore } from "../store";
 import { api, type PageMeta } from "../lib/api";
-import { FileText, Folder, Plus, ChevronRight, BookOpen, LogOut, Search, Home, Tag } from "lucide-react";
+import { FileText, Folder, Plus, ChevronRight, BookOpen, LogOut, Search, Home, Tag, FileUp } from "lucide-react";
 import { toast } from "sonner";
 import { HOME } from "../lib/route";
 import { pagePath, parentOf } from "../lib/tree";
@@ -184,7 +184,12 @@ export function Sidebar() {
           className={"mx-2 mt-2 pl-2 pr-0.5 py-1 flex items-center justify-between rounded-md " + (overTop ? "bg-emerald-50 ring-2 ring-emerald-500/50" : "")}
         >
           <div className="text-xs font-medium text-stone-400">{overTop ? "放到顶层" : "页面"}</div>
-          {canWrite ? <NewPageButton parentId="" /> : <span className="h-6" />}
+          {canWrite ? (
+            <div className="flex items-center gap-0.5">
+              <NewPageButton parentId="" />
+              <ImportButton />
+            </div>
+          ) : <span className="h-6" />}
         </div>
 
         {/* Tree */}
@@ -217,13 +222,20 @@ export function Sidebar() {
               <span className="text-xs text-stone-500">{peers.length} 人在看这一页</span>
             </div>
           )}
-          <div className="flex items-center gap-2 min-w-0">
-            {user && <Avatar login={user.login} size={6} />}
-            <span className="text-xs text-stone-500 truncate flex-1">{user?.login}</span>
-            <a href="/logout" title="退出登录" className="p-1 rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200/60 transition">
-              <LogOut className="size-3.5" />
-            </a>
-          </div>
+          {user ? (
+            <div className="flex items-center gap-2 min-w-0">
+              <Avatar login={user.login} size={6} />
+              <span className="text-xs text-stone-500 truncate flex-1">{user.login}</span>
+              <a href="/logout" title="退出登录" className="p-1 rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200/60 transition">
+                <LogOut className="size-3.5" />
+              </a>
+            </div>
+          ) : (
+            <a
+              href={`/login?next=${encodeURIComponent(location.pathname + location.search + location.hash)}`}
+              className="flex items-center justify-center gap-1.5 h-8 rounded-md bg-emerald-600 text-white text-xs hover:bg-emerald-700 transition"
+            >登录后可编辑</a>
+          )}
         </div>
         {/* Drag handle — thin strip on the right edge */}
         <div
@@ -381,6 +393,24 @@ function NewPageButton({ parentId }: { parentId: string }) {
   );
 }
 
+function ImportButton() {
+  const repo = useStore(s => s.repos.find(r => r.slug === s.currentRepo));
+  const [open, setOpen] = useState(false);
+  if (!repo?.source?.length) return null; // 仓库没有配置任何 import source 就不出现入口
+  return (
+    <>
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen(true); }}
+        title="从 Markdown / MediaWiki 导入页面"
+        className="size-6 flex items-center justify-center rounded text-stone-400 hover:text-emerald-600 hover:bg-stone-200/80 transition"
+      >
+        <FileUp className="size-3.5" />
+      </button>
+      {open && <ImportDialog source={repo.source} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
 // Portaled to <body>: the sidebar drawer is transformed, which would otherwise trap position:fixed.
 export function NewPageDialog({ parentId, onClose }: { parentId: string; onClose(): void }) {
   const currentRepo = useStore(s => s.currentRepo);
@@ -428,6 +458,72 @@ export function NewPageDialog({ parentId, onClose }: { parentId: string; onClose
           <button onClick={onClose} className={btnGhost}>取消</button>
           <button className={btnPrimary} disabled={!canCreate || submitting} onClick={() => void doCreate()}>
             {submitting ? "创建中…" : "创建"}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function ImportDialog({ source, onClose }: { source: string[]; onClose(): void }) {
+  const currentRepo = useStore(s => s.currentRepo);
+  const [title, setTitle] = useState("");
+  const [type, setType] = useState(source[0]);
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const doImport = async () => {
+    if (!currentRepo || !title.trim() || !file || busy) return;
+    setBusy(true);
+    try {
+      const res = await api.importPage(currentRepo, { title: title.trim(), type, file });
+      await useStore.getState().refreshTree();
+      onClose();
+      toast.success("已导入");
+      useStore.getState().openPage(res.id);
+    } catch (e) {
+      toast.error(`导入失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return createPortal(
+    <div className={`${overlay} flex items-start justify-center pt-[18vh] px-4`} onClick={(e) => { e.stopPropagation(); onClose(); }}>
+      <div className="bg-white rounded-xl w-full max-w-sm shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 pt-5 pb-3">
+          <h3 className="font-semibold text-sm text-stone-900">导入页面</h3>
+          <p className="text-xs text-stone-500 mt-0.5">把旧文档文件转成 Markdown 放进来</p>
+        </div>
+        <div className="px-5 pb-4 space-y-3">
+          <input
+            className="w-full rounded-md border border-stone-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 transition"
+            placeholder="页面标题"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            autoFocus
+          />
+          <select
+            value={type}
+            onChange={(e) => setType(e.target.value)}
+            className="w-full rounded-md border border-stone-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 transition"
+          >
+            {source.map(t => <option key={t} value={t}>{t === "markdown" ? "Markdown (原样)" : "MediaWiki"}</option>)}
+          </select>
+          <input
+            type="file"
+            accept={type === "markdown" ? ".md,.markdown,.txt" : ".txt,.wiki,.mediawiki,.md"}
+            onChange={(e) => {
+              setFile(e.target.files?.[0] ?? null);
+            }}
+            className="w-full text-sm text-stone-600 file:mr-3 file:rounded file:border file:border-stone-200 file:bg-stone-50 file:px-3 file:py-1.5 file:text-sm file:text-stone-700 hover:file:bg-stone-100"
+          />
+        </div>
+        <div className="px-5 py-3 bg-stone-50 border-t border-stone-100 flex justify-end gap-2">
+          <button onClick={onClose} className={btnGhost}>取消</button>
+          <button className={btnPrimary} disabled={!title.trim() || !file || busy} onClick={() => void doImport()}>
+            {busy ? "导入中…" : "导入"}
           </button>
         </div>
       </div>

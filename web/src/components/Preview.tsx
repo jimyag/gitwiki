@@ -15,6 +15,7 @@ import { Mermaid } from "./Mermaid";
 export interface Heading { id: string; text: string; level: number }
 
 const imageExt = /\.(png|jpe?g|gif|webp|svg|avif)$/i;
+const pdfExt = /\.pdf$/i;
 
 // Memoized: Editor re-renders on unrelated state (save status, presence) and re-parsing the
 // markdown each time is wasted work.
@@ -47,15 +48,7 @@ export const Preview = memo(function Preview({ body, onHeadings }: {
         rehypePlugins={[rehypeSlug, ...(math ? [math.rehype] : [])]}
         remarkRehypeOptions={{ footnoteLabel: "脚注", footnoteBackLabel: "返回正文" }}
         components={{
-          img: ({ src, alt, node: _, ...rest }) => (
-            <img
-              src={assetUrl(typeof src === "string" ? src : "")}
-              alt={alt ?? ""}
-              {...rest}
-              className="max-w-full rounded-lg border border-stone-200 my-5"
-              loading="lazy"
-            />
-          ),
+          img: ({ src, alt, node: _, ...rest }) => <ZoomableImage src={assetUrl(typeof src === "string" ? src : "")} alt={alt ?? ""} {...rest} />,
           a: ({ href, children }) => <Link href={href ?? ""} assetUrl={assetUrl}>{children}</Link>,
           h1: ({ id, children }) => <Heading tag="h1" id={id} className="text-[26px] font-semibold tracking-tight text-stone-900 mt-10 mb-4 leading-snug">{children}</Heading>,
           // GFM footnotes come with a visually hidden "脚注" heading: keep it hidden.
@@ -139,10 +132,14 @@ function Link({ href, assetUrl, children }: { href: string; assetUrl(src: string
   }
   if (href.startsWith("assets/")) {
     const name = decodeURIComponent(href.slice(7));
-    const file = !imageExt.test(name);
+    const img = imageExt.test(name);
+    const pdf = pdfExt.test(name);
+    if (pdf) {
+      return <PdfPreview href={assetUrl(href)}>{children}</PdfPreview>;
+    }
     return (
-      <a href={assetUrl(href)} download={file ? attachmentName(name) : undefined} target={file ? undefined : "_blank"} className={linkClass}>
-        {file && <Paperclip className="inline size-3.5 mr-0.5 -mt-0.5" />}{children}
+      <a href={assetUrl(href)} download={!img ? attachmentName(name) : undefined} target={img ? "_blank" : undefined} className={linkClass}>
+        {!img && <Paperclip className="inline size-3.5 mr-0.5 -mt-0.5" />}{children}
       </a>
     );
   }
@@ -158,6 +155,47 @@ function Link({ href, assetUrl, children }: { href: string; assetUrl(src: string
     <a href={href} target={external ? "_blank" : undefined} rel={external ? "noopener noreferrer" : undefined} className={linkClass}>
       {children}
     </a>
+  );
+}
+
+function ZoomableImage({ src, alt, ...rest }: { src: string; alt: string; [k: string]: unknown }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <img
+        src={src}
+        alt={alt}
+        {...rest}
+        className="max-w-full rounded-lg border border-stone-200 my-5 cursor-zoom-in"
+        loading="lazy"
+        onClick={() => setOpen(true)}
+      />
+      {open && (
+        <div className="fixed inset-0 z-50 bg-stone-950/80 flex items-center justify-center p-6 cursor-zoom-out" onClick={() => setOpen(false)}>
+          <img src={src} alt={alt} className="max-w-full max-h-full object-contain rounded shadow-2xl" />
+        </div>
+      )}
+    </>
+  );
+}
+
+// PDF 附件：标题后面跟一个展开的内嵌预览，浏览器自带的 PDF 阅读器。
+function PdfPreview({ href, children }: { href: string; children?: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="inline-flex items-center gap-2">
+      <a href={href} target="_blank" rel="noreferrer" className={linkClass}>
+        <Paperclip className="inline size-3.5 mr-0.5 -mt-0.5" />{children}
+      </a>
+      <button onClick={() => setOpen(o => !o)} className="text-xs text-stone-400 hover:text-stone-600 underline underline-offset-2">
+        {open ? "收起" : "预览"}
+      </button>
+      {open && (
+        <span className="block w-full my-3 rounded-lg border border-stone-200 overflow-hidden" style={{ gridColumn: "1/-1" }}>
+          <iframe src={href} title="PDF 预览" className="w-full h-[70vh] bg-white" />
+        </span>
+      )}
+    </span>
   );
 }
 

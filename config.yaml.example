@@ -18,3 +18,5 @@ repos:
     title: My Wiki
     # Optional: where the Hugo site is published; pages get an "在站点中查看" link.
     # site_url: https://wiki.example.com
+    # read_public: true        # 不登录也能阅读；写始终要求有 push 权限的 GitHub 账号
+    # source: [markdown, mediawiki]   # 侧栏出现“导入”按钮，把这些格式转成 Markdown

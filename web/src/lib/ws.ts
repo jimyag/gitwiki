@@ -34,6 +34,14 @@ export function connectPresence(slug: string, pageId: string) {
         } as RemoteCursor);
       } else if (msg.type === "cursor-left") {
         st.removeRemoteCursor(msg.user);
+      } else if (msg.type === "editing") {
+        st.setPeerEditing(msg.user, !!msg.edit);
+      } else if (msg.type === "comments") {
+        // Someone saved (or just typed) a comment on this page: refresh if it is the open
+        // one, remember which peers have comments for the badge.
+        const by = (msg.user || "").split(",").filter(Boolean);
+        if (st.currentPageId === msg.page) st.bumpCommentsRev();
+        st.setCommentPeers(msg.page, by);
       } else if (msg.type === "sync") {
         st.setSyncError(msg.error || null);
       }
@@ -61,4 +69,9 @@ export function disconnectPresence() {
 export function sendCursor(anchor: number, head: number) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({ type: "cursor", anchor, head }));
+}
+
+export function sendEditing(editing: boolean) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: "editing", edit: editing }));
 }

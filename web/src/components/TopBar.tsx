@@ -6,10 +6,13 @@ import { HOME } from "../lib/route";
 import { deletePage, movePage } from "../lib/actions";
 import {
   RefreshCw, Check, AlertTriangle, Loader2, Pencil, ArrowUp, ArrowDown, Trash2, Plus,
-  MoreHorizontal, Menu, ChevronRight, CloudOff, FolderInput, Eye,
+  MoreHorizontal, Menu, ChevronRight, CloudOff, FolderInput, Eye, Printer, FileDown,
+  Copy,
 } from "lucide-react";
 import { toast } from "sonner";
 import { NewPageDialog } from "./Sidebar";
+import { TrashDialog } from "./TrashDialog";
+import { StarBtn } from "./StarBtn";
 import { PagePicker } from "./PagePicker";
 import { btnGhost, btnPrimary, iconBtn, overlay } from "./ui";
 
@@ -44,12 +47,26 @@ export function TopBar() {
 
   const [renaming, setRenaming] = useState(false);
   const [renameVal, setRenameVal] = useState("");
-  const [dialog, setDialog] = useState<"create" | "move" | "delete" | null>(null);
+  const [dialog, setDialog] = useState<"create" | "move" | "delete" | "trash" | null>(null);
 
-  if (!user) return null;
+  const copyPage = async () => {
+    if (!currentRepo || !ctx) return;
+    try {
+      const res = await api.copyPage(currentRepo, ctx.node.id);
+      await useStore.getState().refreshTree();
+      toast.success("已复制");
+      useStore.getState().openPage(res.id);
+    } catch (e: any) {
+      toast.error(`复制失败：${e.message}`);
+    }
+  };
 
   const ctx = findNode(tree, currentPageId);
   const path = pagePath(tree, currentPageId);
+  const peers = useStore(s => s.peers);
+  const pageMeta = useStore(s => pagePath(s.tree, s.currentPageId).at(-1));
+  // 其他人正在编辑同一页：点“编辑”前先提醒，不要互相撞车。
+  const othersEditing = user ? peers.filter(pp => pp.editing && pp.user !== user.login) : [];
 
   // Remounts the editor so body and base_sha are refetched together. Keeping the old body
   // with the new base_sha would make the next save silently overwrite the other edit.
@@ -107,7 +124,19 @@ export function TopBar() {
         {currentPageId === HOME && <span className="truncate px-1 font-medium text-stone-900">首页</span>}
       </nav>
 
-      {lastSavedBy !== null && lastSavedBy !== user.login && (
+      {othersEditing.length > 0 && (
+        <span
+          title={othersEditing.map(p => p.name || p.user).join("、") + " 正在编辑这一页"}
+          className="inline-flex items-center gap-1.5 h-7 shrink-0 text-xs px-2.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200"
+        >
+          <span className="size-1.5 rounded-full bg-amber-500 animate-pulse" />
+          {othersEditing.length === 1
+            ? <><span className="font-medium max-w-[6rem] truncate">{othersEditing[0].name || othersEditing[0].user}</span><span className="hidden sm:inline">正在编辑</span></>
+            : <span>{othersEditing.length} 正在编辑</span>}
+        </span>
+      )}
+
+      {lastSavedBy !== null && user && lastSavedBy !== user.login && (
         <button
           onClick={handleRefresh}
           title="载入新版本"
@@ -138,11 +167,17 @@ export function TopBar() {
 
       {!canWrite && (
         <span
-          title="你可以阅读，但没有编辑权限"
+          title={user ? "你可以阅读，但没有编辑权限" : "登录后可编辑"}
           className="inline-flex items-center gap-1 h-7 shrink-0 text-xs px-2.5 rounded-full bg-stone-100 text-stone-600"
         >
           <Eye className="size-3.5" />只读
         </span>
+      )}
+      {!user && (
+        <a href={`/login?next=${encodeURIComponent(location.pathname + location.search + location.hash)}`}
+           className="inline-flex items-center gap-1 h-7 shrink-0 text-xs px-2.5 rounded-full bg-emerald-600 text-white hover:bg-emerald-700 transition">
+          登录
+        </a>
       )}
 
       <StatusIndicator status={saveStatus} dirty={dirty} />
@@ -150,6 +185,21 @@ export function TopBar() {
       {/* Editor portals the page's own actions (编辑 / 保存 / 历史 / 附件) in here. */}
       <div id="page-actions" className="flex items-center gap-1 shrink-0" />
 
+      {ctx && currentRepo && currentPageId && currentPageId !== HOME && (
+        <>
+          <StarBtn repo={currentRepo} page={currentPageId} title={pageMeta?.title ?? currentPageId} />
+        </>
+      )}
+      {ctx && currentRepo && currentPageId && (
+        <>
+          <a href={api.mdUrl(currentRepo, currentPageId)} title="Markdown 源文件" className={iconBtn} target="_blank" rel="noreferrer">
+            <FileDown className="size-4" />
+          </a>
+          <button onClick={() => window.print()} title="打印 / 导出 PDF" className={iconBtn}>
+            <Printer className="size-4" />
+          </button>
+        </>
+      )}
       {ctx && canWrite && (
         <MoreMenu items={[
           { label: "新建子页面", icon: <Plus />, onClick: () => setDialog("create") },
@@ -157,6 +207,8 @@ export function TopBar() {
           { label: "移动到…", icon: <FolderInput />, onClick: () => setDialog("move") },
           { label: "上移", icon: <ArrowUp />, onClick: () => void reorder(-1), disabled: ctx.index === 0 },
           { label: "下移", icon: <ArrowDown />, onClick: () => void reorder(1), disabled: ctx.index === ctx.siblings.length - 1 },
+          { label: "复制页面", icon: <Copy />, onClick: () => void copyPage() },
+          { label: "回收站", icon: <Trash2 />, onClick: () => setDialog("trash") },
           { label: "删除页面", icon: <Trash2 />, onClick: () => setDialog("delete"), danger: true },
         ]} />
       )}
@@ -173,6 +225,7 @@ export function TopBar() {
         />
       )}
       {dialog === "delete" && ctx && <DeleteDialog node={ctx.node} onClose={() => setDialog(null)} />}
+      {dialog === "trash" && <TrashDialog onClose={() => setDialog(null)} />}
 
       {renaming && (
         <div className={`${overlay} flex items-start justify-center pt-[18vh] px-4`} onClick={() => setRenaming(false)}>

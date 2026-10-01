@@ -15,38 +15,42 @@ import (
 )
 
 type Peer struct {
-	User  string `json:"user"`
-	Name  string `json:"name"`
-	Page  string `json:"page"`
-	Since int64  `json:"since"`
+	User    string `json:"user"`
+	Name    string `json:"name"`
+	Page    string `json:"page"`
+	Since   int64  `json:"since"`
+	Editing bool   `json:"editing,omitempty"` // the editor is open on this page
 }
 
 type client struct {
-	user *auth.User
-	page string
-	repo string
-	conn *websocket.Conn
-	send chan outbound
+	user    *auth.User
+	page    string
+	repo    string
+	editing bool
+	since   int64
+	conn    *websocket.Conn
+	send    chan outbound
 }
 
-
 type inbound struct {
-	Type   string `json:"type"`              // "cursor"
+	Type   string `json:"type"` // "cursor", "editing"
 	Anchor int    `json:"anchor"`
 	Head   int    `json:"head"`
+	Edit   bool   `json:"edit"`
 }
 
 type outbound struct {
 	Type  string   `json:"type"`
+	Edit  bool     `json:"edit,omitempty"` // "editing": whether the sender's editor is open
 	Peers []Peer   `json:"peers,omitempty"`
 	User  string   `json:"user,omitempty"`
 	Page  string   `json:"page,omitempty"`
 	Pages []string `json:"pages,omitempty"` // "changed": the pages that changed
 
 	// cursor broadcast
-	Anchor  int    `json:"anchor,omitempty"`  // absolute offset in doc
-	Head    int    `json:"head,omitempty"`    // selection head (== anchor if no selection)
-	Color   string `json:"color,omitempty"`   // server-assigned stable color for the user
+	Anchor int    `json:"anchor,omitempty"` // absolute offset in doc
+	Head   int    `json:"head,omitempty"`   // selection head (== anchor if no selection)
+	Color  string `json:"color,omitempty"`  // server-assigned stable color for the user
 
 	Error string `json:"error,omitempty"` // "sync": why pushing to origin failed; empty once it works
 }
@@ -80,7 +84,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	cl := &client{user: u, repo: repo, page: page, conn: c, send: make(chan outbound, 16)}
+	cl := &client{user: u, repo: repo, page: page, conn: c, send: make(chan outbound, 16), since: time.Now().Unix()}
 	key := repo + "/" + page
 
 	h.mu.Lock()
@@ -101,7 +105,6 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cl.reader(room, h, key)
 }
 
-
 var palette = []string{
 	"#0ea5e9", "#8b5cf6", "#f59e0b", "#10b981", "#ef4444", "#ec4899", "#14b8a6", "#f97316",
 }
@@ -119,7 +122,7 @@ func (h *Hub) colorFor(user string) string {
 func snapshotLocked(room map[*client]bool) []Peer {
 	out := make([]Peer, 0, len(room))
 	for c := range room {
-		out = append(out, Peer{User: c.user.Login, Name: displayName(c.user), Page: c.page, Since: time.Now().Unix()})
+		out = append(out, Peer{User: c.user.Login, Name: displayName(c.user), Page: c.page, Since: c.since, Editing: c.editing})
 	}
 	return out
 }
@@ -157,6 +160,16 @@ func (h *Hub) BroadcastSync(repo string, err error) {
 		msg.Error = err.Error()
 	}
 	h.broadcastRepo(repo, msg)
+}
+
+// BroadcastComments tells everyone on repo/page which comment ids belong to byUser.
+// Editors use it to refresh the sidebar; other readers ignore "comments" messages.
+func (h *Hub) BroadcastComments(repo, page string, byUser map[string]string) {
+	logins := make([]string, 0, len(byUser))
+	for _, l := range byUser {
+		logins = append(logins, l)
+	}
+	h.broadcastRepo(repo, outbound{Type: "comments", User: strings.Join(logins, ","), Page: page})
 }
 
 func (h *Hub) broadcastRepo(repo string, msg outbound) {
@@ -197,15 +210,20 @@ func (c *client) reader(room map[*client]bool, h *Hub, key string) {
 		if err := wsjson.Read(ctx, c.conn, &msg); err != nil {
 			return
 		}
-		if msg.Type != "cursor" {
-			continue
+		switch msg.Type {
+		case "cursor":
+			h.mu.Lock()
+			color := h.colorFor(c.user.Login)
+			h.mu.Unlock()
+			h.broadcast(room, outbound{
+				Type: "cursor", User: c.user.Login,
+				Anchor: msg.Anchor, Head: msg.Head, Color: color,
+			}, c) // don't echo to self
+		case "editing":
+			h.mu.Lock()
+			c.editing = msg.Edit
+			h.mu.Unlock()
+			h.broadcast(room, outbound{Type: "editing", User: c.user.Login, Edit: msg.Edit}, nil)
 		}
-		h.mu.Lock()
-		color := h.colorFor(c.user.Login)
-		h.mu.Unlock()
-		h.broadcast(room, outbound{
-			Type: "cursor", User: c.user.Login,
-			Anchor: msg.Anchor, Head: msg.Head, Color: color,
-		}, c) // don't echo to self
 	}
 }

@@ -31,8 +31,9 @@ const offline = () => new Error("网络连接失败，请检查网络后重试")
 async function call(path: string, init?: RequestInit): Promise<Response> {
   const r = await fetch(path, init).catch(() => { throw offline(); });
   if (r.status === 401) {
-    window.location.href = loginUrl();
-    throw new ApiError(401);
+    // Writing while logged out bounces to login; for reads the repo simply is not public:
+    // the router-level 401 page carries the login button instead of a redirect loop here.
+    throw new ApiError(401, await r.text().catch(() => ""));
   }
   return r;
 }
@@ -48,7 +49,7 @@ const q = encodeURIComponent;
 
 export interface User { login: string; name: string; email: string }
 // can_write: the user may push to the GitHub repo; without it the wiki is read-only for them.
-export interface Repo { slug: string; title: string; can_write: boolean; site_url?: string }
+export interface Repo { slug: string; title: string; can_write: boolean; site_url?: string; source?: string[] }
 export interface PageMeta {
   id: string; title: string; is_dir: boolean; has_body: boolean;
   tags?: string[]; draft?: boolean; children?: PageMeta[];
@@ -78,6 +79,12 @@ export interface Change {
 export interface PageRef { id: string; title: string }
 export interface SearchHit { page_id: string; title: string; snippet: string; terms: string[] }
 export interface AssetUpload { path: string }
+export interface CommentAnchor {
+  quote: string; prefix: string; suffix: string; start_raw: number; end_raw: number;
+}
+export interface Comment {
+  id: string; by: string; name: string; at: string; text: string; anchor?: CommentAnchor;
+}
 
 export const api = {
   // repos: the configured repos the user can read (present when logged in).
@@ -111,6 +118,22 @@ export const api = {
   backlinks: (slug: string, id: string, subtree = false) =>
     req<PageRef[]>(`/api/repos/${slug}/backlinks?id=${q(id)}${subtree ? "&subtree=1" : ""}`),
   search: (slug: string, query: string) => req<SearchHit[]>(`/api/repos/${slug}/search?q=${q(query)}`),
+  trash: (slug: string) => req<Change[]>(`/api/repos/${slug}/trash`),
+  comments: (slug: string, pageId: string) => req<Comment[]>(`/api/repos/${slug}/comments?page_id=${q(pageId)}`),
+  postComment: (slug: string, body: { page_id: string; text: string; anchor?: CommentAnchor; save: boolean }) =>
+    req<Comment>(`/api/repos/${slug}/comments`, post(body)),
+  importPage: (slug: string, p: { parent_id?: string; title: string; type: string; file: File }) => {
+    const fd = new FormData();
+    fd.append("title", p.title);
+    fd.append("type", p.type);
+    fd.append("file", p.file);
+    if (p.parent_id) fd.append("parent_id", p.parent_id);
+    return req<{ id: string }>(`/api/repos/${slug}/import`, { method: "POST", body: fd });
+  },
+  copyPage: (slug: string, id: string, parentId?: string) =>
+    req<{ id: string }>(`/api/repos/${slug}/copy`, post({ id, parent_id: parentId ?? "" })),
+  // Link the user can share; the SPA server maps `GET /{slug}/{page}.md` to this API.
+  mdUrl: (slug: string, id: string) => `/${encodeURIComponent(slug)}/${id === "_index" ? "" : id.split("/").map(encodeURIComponent).join("/")}.md`.replace(/\/+/, "/"),
   listAssets: (slug: string, pageId: string) =>
     req<string[]>(`/api/repos/${slug}/assets?page_id=${q(pageId)}`),
   deleteAsset: (slug: string, pageId: string, name: string) =>

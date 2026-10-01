@@ -15,6 +15,12 @@ type Repo struct {
 	ContentDir string `yaml:"content_dir"`
 	Title      string `yaml:"title"`
 	SiteURL    string `yaml:"site_url"` // optional: the published Hugo site, for "在站点中查看" links
+	// ReadPublic lets anyone read without logging in (e.g. an intranet wiki).
+	// Writes always need a GitHub login with push access.
+	ReadPublic bool `yaml:"read_public"`
+	// Source lists types ("markdown", "mediawiki") whose /import endpoint converts
+	// pasted markup into gitwiki markdown.
+	Source []string `yaml:"source"`
 }
 
 type Config struct {
@@ -58,6 +64,11 @@ func Load(path string) (*Config, error) {
 		}
 		if r.ContentDir == "" {
 			r.ContentDir = "content"
+		}
+		for _, src := range r.Source {
+			if src != "markdown" && src != "mediawiki" {
+				return nil, fmt.Errorf("repo %s: unknown source type %q", r.Slug, src)
+			}
 		}
 		if r.Title == "" {
 			r.Title = r.Slug
