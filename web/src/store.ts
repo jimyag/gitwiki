@@ -3,6 +3,8 @@ import { api, type PageMeta, type Repo, type User } from "./lib/api";
 
 export type SaveStatus = "idle" | "saving" | "saved" | "conflict" | "error";
 
+export type Panel = "assets" | "history" | "comments";
+
 export interface Peer { user: string; name: string; page: string; since: number; editing?: boolean }
 
 export interface RemoteCursor {
@@ -60,9 +62,11 @@ interface State {
   setSearchOpen(open: boolean): void;
   tagsOpen: string | null; // the tag browser: null closed, "" all tags, else the selected tag
   setTagsOpen(tag: string | null): void;
+  // The open page's panel: opened from the TopBar, rendered by the Editor that owns the page.
+  panel: Panel | null;
+  setPanel(p: Panel | null): void;
   setUser(u: User | null): void;
   setRepos(r: Repo[]): void;
-  setCurrentRepo(s: string | null): void;
   setTree(t: PageMeta | null): void;
   // The editor loads content and base_sha itself; callers only pick the page. Both return false
   // when the user chose to stay on a page with unsaved changes.
@@ -82,7 +86,7 @@ function leaveOk(dirty: boolean): boolean {
   return !dirty || confirm("这个页面有未保存的修改。离开后，下次打开它时可以从本机草稿恢复。确定离开？");
 }
 
-const pageReset = { baseSha: "", dirty: false, saveStatus: "idle" as SaveStatus, lastSavedBy: null, navOpen: false, commentPeers: {} };
+const pageReset = { baseSha: "", dirty: false, saveStatus: "idle" as SaveStatus, lastSavedBy: null, navOpen: false, commentPeers: {}, panel: null };
 
 export const useStore = create<State>((set, get) => ({
   user: null,
@@ -130,9 +134,10 @@ export const useStore = create<State>((set, get) => ({
   setSearchOpen: (searchOpen) => set({ searchOpen }),
   tagsOpen: null,
   setTagsOpen: (tagsOpen) => set({ tagsOpen }),
+  panel: null,
+  setPanel: (panel) => set({ panel }),
   setUser: (user) => set({ user }),
   setRepos: (repos) => set({ repos }),
-  setCurrentRepo: (currentRepo) => set({ currentRepo, tree: null, currentPageId: null, baseSha: "" }),
   setTree: (tree) => set({ tree }),
   openPage: (currentPageId) => {
     const s = get();

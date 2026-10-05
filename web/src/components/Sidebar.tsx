@@ -1,13 +1,13 @@
 import { useState, useEffect, useRef, type CSSProperties, type DragEvent } from "react";
-import { createPortal } from "react-dom";
-import { useCanWrite, useStore } from "../store";
-import { api, type PageMeta } from "../lib/api";
-import { FileText, Folder, Plus, ChevronRight, BookOpen, LogOut, Search, Home, Tag, FileUp } from "lucide-react";
+import { useCanWrite, useRepoInfo, useStore } from "../store";
+import { api, loginUrl, type PageMeta } from "../lib/api";
+import { Folder, Plus, ChevronRight, ChevronsUpDown, LogOut, Search, Home, Tag, FileUp, Trash2, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { HOME } from "../lib/route";
 import { pagePath, parentOf } from "../lib/tree";
 import { movePage } from "../lib/actions";
-import { btnGhost, btnPrimary, overlay } from "./ui";
+import { Avatar, Dialog, btnGhost, btnPrimary, dialogFooter, input } from "./ui";
+import { TrashDialog } from "./TrashDialog";
 
 // Dragging a page onto another makes it a child of that page (onto the "页面" header: top
 // level). The dragged id lives here because dataTransfer cannot be read during dragover.
@@ -43,70 +43,42 @@ function dropHandlers(target: string, setOver: (o: boolean) => void) {
   };
 }
 
-// Stable color from user login. Used in avatar and cursor.
-export function colorForUser(login: string): string {
-  const palette = [
-    ["#0ea5e9", "#0284c7"], // sky
-    ["#8b5cf6", "#7c3aed"], // violet
-    ["#f59e0b", "#d97706"], // amber
-    ["#10b981", "#059669"], // emerald
-    ["#ef4444", "#dc2626"], // red
-    ["#ec4899", "#db2777"], // pink
-    ["#14b8a6", "#0d9488"], // teal
-    ["#f97316", "#ea580c"], // orange
-  ];
-  let h = 0;
-  for (let i = 0; i < login.length; i++) h = (h * 31 + login.charCodeAt(i)) >>> 0;
-  const [a, b] = palette[h % palette.length];
-  return `linear-gradient(135deg, ${a}, ${b})`;
-}
-
-export function Avatar({ login, size = 6 }: { login: string; size?: number }) {
-  const cls = `rounded-full text-white flex items-center justify-center font-semibold shrink-0 size-${size}`;
-  return (
-    <div
-      className={cls + " text-[10px]"}
-      style={{ background: colorForUser(login) }}
-      title={login}
-    >
-      {login.slice(0, 1).toUpperCase()}
-    </div>
-  );
-}
-
 // Width the user last dragged the sidebar to (also used by the boot frame in App).
 export function savedSidebarWidth(): number {
   const saved = localStorage.getItem("gitwiki.sidebarWidth");
   return saved ? Math.max(180, Math.min(480, parseInt(saved, 10) || 256)) : 256;
 }
 
+// Rows of the sidebar: the white raised row is the page that is open.
+const rowIdle = "text-stone-600 hover:bg-stone-200/50 hover:text-stone-900";
+const rowActive = "bg-white text-stone-900 font-medium shadow-sm ring-1 ring-stone-200/80";
+
 export function Sidebar() {
   const tree = useStore(s => s.tree);
   const repos = useStore(s => s.repos);
-  const currentRepo = useStore(s => s.currentRepo);
-  const setCurrentRepo = useStore(s => s.setCurrentRepo);
+  const repo = useRepoInfo();
   const pageId = useStore(s => s.currentPageId);
   const openPage = useStore(s => s.openPage);
   const user = useStore(s => s.user);
-  const peers = useStore(s => s.peers);
   const navOpen = useStore(s => s.navOpen);
   const setNavOpen = useStore(s => s.setNavOpen);
   const setSearchOpen = useStore(s => s.setSearchOpen);
   const canWrite = useCanWrite();
   const [overTop, setOverTop] = useState(false);
+  const [trashOpen, setTrashOpen] = useState(false);
 
   const [width, setWidth] = useState(savedSidebarWidth);
-  const dragging = useRef(false);
+  const resizing = useRef(false);
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
-      if (!dragging.current) return;
+      if (!resizing.current) return;
       const next = Math.max(180, Math.min(480, e.clientX));
       setWidth(next);
     };
     const onUp = () => {
-      if (dragging.current) {
-        dragging.current = false;
+      if (resizing.current) {
+        resizing.current = false;
         localStorage.setItem("gitwiki.sidebarWidth", String(width));
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
@@ -119,6 +91,9 @@ export function Sidebar() {
       window.removeEventListener("mouseup", onUp);
     };
   }, [width]);
+
+  const title = repo?.title ?? "gitwiki";
+  const switchable = repos.length > 1;
 
   return (
     <>
@@ -134,114 +109,83 @@ export function Sidebar() {
           " flex flex-col shrink-0 bg-stone-50 text-stone-700 border-r border-stone-200"
         }
       >
-        {/* Logo row */}
-        <div className="h-12 shrink-0 flex items-center gap-2 px-4 border-b border-stone-200">
-          <BookOpen className="size-4 shrink-0 text-emerald-600" />
-          <span className="font-semibold text-stone-900 text-sm">gitwiki</span>
-          <span className="text-stone-300">/</span>
-          <select
-            className="min-w-0 flex-1 text-sm bg-transparent text-stone-600 focus:outline-none cursor-pointer truncate hover:text-stone-900 transition"
-            value={currentRepo ?? ""}
-            onChange={(e) => setCurrentRepo(e.target.value)}
-          >
-            {repos.map(r => <option key={r.slug} value={r.slug} className="bg-white text-stone-900">{r.title}</option>)}
-          </select>
+        {/* The wiki. With several, the native select lies invisibly over the name and does the picking. */}
+        <div className="h-12 shrink-0 flex items-center px-2 border-b border-stone-200">
+          <div className={"relative flex-1 min-w-0 flex items-center gap-2 h-9 px-1.5 rounded-md transition-colors " + (switchable ? "hover:bg-stone-200/50" : "")}>
+            <span className="size-6 shrink-0 rounded-md bg-emerald-600 text-white text-xs font-semibold flex items-center justify-center">
+              {[...title][0]?.toUpperCase()}
+            </span>
+            <span className="flex-1 min-w-0 truncate text-sm font-semibold text-stone-900">{title}</span>
+            {switchable && (
+              <>
+                <ChevronsUpDown className="size-3.5 shrink-0 text-stone-400" />
+                <select
+                  aria-label="切换 Wiki"
+                  value={repo?.slug ?? ""}
+                  onChange={(e) => useStore.getState().goTo(e.target.value, HOME)}
+                  className="absolute inset-0 w-full opacity-0 cursor-pointer"
+                >
+                  {repos.map(r => <option key={r.slug} value={r.slug}>{r.title}</option>)}
+                </select>
+              </>
+            )}
+          </div>
         </div>
 
-        <div className="mx-3 mt-3 flex items-center gap-1.5">
+        <nav className="shrink-0 px-2 pt-3 space-y-px">
           <button
             onClick={() => setSearchOpen(true)}
-            className="flex-1 min-w-0 flex items-center gap-2 rounded-md border border-stone-200 bg-white px-2.5 h-8 text-[13px] text-stone-400 hover:border-stone-300 hover:text-stone-600 transition"
+            className="w-full mb-2 flex items-center gap-2 h-8 px-2.5 rounded-md border border-stone-200 bg-white text-[13px] text-stone-400 hover:border-stone-300 hover:text-stone-600 transition"
           >
             <Search className="size-3.5" />
-            <span className="flex-1 text-left">搜索页面</span>
-            <kbd className="font-mono text-[10px] text-stone-400">⌘K</kbd>
+            <span className="flex-1 text-left">搜索</span>
+            <kbd className="font-sans text-[11px] text-stone-400">⌘K</kbd>
           </button>
-          <button
-            onClick={() => useStore.getState().setTagsOpen("")}
-            title="按标签浏览"
-            className="size-8 shrink-0 flex items-center justify-center rounded-md border border-stone-200 bg-white text-stone-400 hover:border-stone-300 hover:text-stone-600 transition"
-          >
-            <Tag className="size-3.5" />
-          </button>
-        </div>
-
-        <button
-          onClick={() => openPage(HOME)}
-          className={
-            "mx-2 mt-3 flex items-center gap-2 rounded-md px-2 h-8 text-[13px] transition-colors " +
-            (pageId === HOME
-              ? "bg-white text-stone-900 font-medium shadow-sm ring-1 ring-stone-200/80"
-              : "text-stone-600 hover:bg-stone-200/50 hover:text-stone-900")
-          }
-        >
-          <Home className={"size-3.5 " + (pageId === HOME ? "text-stone-500" : "text-stone-400")} />首页
-        </button>
+          <NavItem icon={Home} label="首页" active={pageId === HOME} onClick={() => openPage(HOME)} />
+          <NavItem icon={Tag} label="标签" onClick={() => useStore.getState().setTagsOpen("")} />
+          {canWrite && <NavItem icon={Trash2} label="回收站" onClick={() => setTrashOpen(true)} />}
+        </nav>
 
         {/* Pages label + new button; also the drop target for moving a page to the top level */}
         <div
           {...dropHandlers("", setOverTop)}
-          className={"mx-2 mt-2 pl-2 pr-0.5 py-1 flex items-center justify-between rounded-md " + (overTop ? "bg-emerald-50 ring-2 ring-emerald-500/50" : "")}
+          className={"shrink-0 mx-2 mt-4 mb-1 h-7 pl-2 pr-0.5 flex items-center justify-between rounded-md " + (overTop ? "bg-emerald-50 ring-2 ring-emerald-500/50" : "")}
         >
           <div className="text-xs font-medium text-stone-400">{overTop ? "放到顶层" : "页面"}</div>
-          {canWrite ? (
+          {canWrite && (
             <div className="flex items-center gap-0.5">
-              <NewPageButton parentId="" />
               <ImportButton />
+              <NewPageButton parentId="" />
             </div>
-          ) : <span className="h-6" />}
+          )}
         </div>
 
-        {/* Tree */}
-        <div className="flex-1 overflow-auto px-2 pb-4 space-y-px">
+        <div className="flex-1 overflow-y-auto px-2 pb-4">
           {!tree ? (
-            <div className="px-3 py-2 text-xs text-stone-400">加载中…</div>
+            <div className="px-2 py-1.5 text-xs text-stone-400">加载中…</div>
           ) : (
-            <Tree node={tree} currentId={pageId} onOpen={(node) => {
-              if (node.has_body) openPage(node.id);
-            }} />
+            tree.children?.map(c => <TreeNode key={c.id} node={c} depth={0} currentId={pageId} />)
           )}
         </div>
 
-        {/* Bottom: presence + user */}
-        <div className="border-t border-stone-200 px-4 py-3 space-y-2.5">
-          {peers.length > 1 && (
-            <div className="flex items-center gap-2">
-              <div className="flex -space-x-1">
-                {peers.slice(0, 4).map(p => (
-                  <div
-                    key={p.user}
-                    title={p.name || p.user}
-                    className="size-5 rounded-full text-white flex items-center justify-center text-[8px] font-semibold ring-2 ring-stone-50"
-                    style={{ background: colorForUser(p.user) }}
-                  >
-                    {(p.name || p.user).slice(0,1).toUpperCase()}
-                  </div>
-                ))}
-              </div>
-              <span className="text-xs text-stone-500">{peers.length} 人在看这一页</span>
-            </div>
-          )}
+        <div className="shrink-0 border-t border-stone-200 p-2">
           {user ? (
-            <div className="flex items-center gap-2 min-w-0">
-              <Avatar login={user.login} size={6} />
-              <span className="text-xs text-stone-500 truncate flex-1">{user.login}</span>
-              <a href="/logout" title="退出登录" className="p-1 rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200/60 transition">
+            <div className="flex items-center gap-2 h-9 pl-1.5 min-w-0">
+              <Avatar login={user.login} name={user.name} />
+              <span className="flex-1 min-w-0 truncate text-[13px] text-stone-700">{user.name || user.login}</span>
+              <a href="/logout" title="退出登录" className="size-7 shrink-0 flex items-center justify-center rounded-md text-stone-400 hover:text-stone-700 hover:bg-stone-200/60 transition">
                 <LogOut className="size-3.5" />
               </a>
             </div>
           ) : (
-            <a
-              href={`/login?next=${encodeURIComponent(location.pathname + location.search + location.hash)}`}
-              className="flex items-center justify-center gap-1.5 h-8 rounded-md bg-emerald-600 text-white text-xs hover:bg-emerald-700 transition"
-            >登录后可编辑</a>
+            <a href={loginUrl()} className={`${btnPrimary} w-full justify-center`}>登录后可编辑</a>
           )}
         </div>
         {/* Drag handle — thin strip on the right edge */}
         <div
           onMouseDown={(e) => {
             e.preventDefault();
-            dragging.current = true;
+            resizing.current = true;
             document.body.style.cursor = "col-resize";
             document.body.style.userSelect = "none";
           }}
@@ -249,51 +193,37 @@ export function Sidebar() {
           title="拖拽调整侧边栏宽度"
         />
       </aside>
+      {trashOpen && <TrashDialog onClose={() => setTrashOpen(false)} />}
     </>
   );
 }
 
-function Tree({ node, currentId, onOpen }: { node: PageMeta; currentId: string | null; onOpen: (n: PageMeta) => void }) {
+function NavItem({ icon: Icon, label, active, onClick }: { icon: LucideIcon; label: string; active?: boolean; onClick(): void }) {
   return (
-    <TreeList siblings={node.children || []} depth={0} currentId={currentId} onOpen={onOpen} />
+    <button
+      onClick={onClick}
+      className={"w-full flex items-center gap-2 h-8 md:h-7 px-2 rounded-md text-[13px] transition-colors " + (active ? rowActive : rowIdle)}
+    >
+      <Icon className={"size-3.5 shrink-0 " + (active ? "text-emerald-600" : "text-stone-400")} />{label}
+    </button>
   );
 }
 
-function TreeList({ siblings, depth, currentId, onOpen }: {
-  siblings: PageMeta[];
-  depth: number;
-  currentId: string | null;
-  onOpen: (n: PageMeta) => void;
-}) {
-  return (
-    <>
-      {siblings.map((c) => (
-        <TreeNode
-          key={c.id}
-          node={c}
-          depth={depth}
-          currentId={currentId}
-          onOpen={onOpen}
-        />
-      ))}
-    </>
-  );
-}
-
-function TreeNode({ node, depth, currentId, onOpen }: {
-  node: PageMeta;
-  depth: number;
-  currentId: string | null;
-  onOpen: (n: PageMeta) => void;
-}) {
-  const [open, setOpen] = useState(depth < 2);
+function TreeNode({ node, depth, currentId }: { node: PageMeta; depth: number; currentId: string | null }) {
+  const below = !!currentId?.startsWith(node.id + "/"); // the open page is somewhere under this one
+  const [open, setOpen] = useState(depth < 2 || below);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(node.title);
   const [over, setOver] = useState(false);
+  const row = useRef<HTMLDivElement>(null);
   const currentRepo = useStore(s => s.currentRepo);
   const canWrite = useCanWrite();
   const active = currentId === node.id;
   const hasChildren = (node.children?.length ?? 0) > 0;
+
+  // Opening a deep page (from search or a link) unfolds the way to it and brings it into view.
+  useEffect(() => { if (below) setOpen(true); }, [below]);
+  useEffect(() => { if (active) row.current?.scrollIntoView({ block: "nearest" }); }, [active]);
 
   const onRename = async () => {
     if (!currentRepo || !renameValue.trim() || renameValue === node.title) { setRenaming(false); return; }
@@ -307,22 +237,15 @@ function TreeNode({ node, depth, currentId, onOpen }: {
     setRenaming(false);
   };
 
-  // A page is a document even when it has children; only folders without a page file look like folders.
-  const Icon = node.has_body ? FileText : Folder;
-
   return (
     <div>
       <div
+        ref={row}
         className={
-          "group relative flex items-center gap-1.5 rounded-md pr-1 h-8 cursor-pointer select-none text-[13px] transition-colors " +
-          (over
-            ? "bg-emerald-50 text-stone-900 ring-2 ring-emerald-500/50"
-            : active
-            ? "bg-white text-stone-900 font-medium shadow-sm ring-1 ring-stone-200/80"
-            : "text-stone-600 hover:bg-stone-200/50 hover:text-stone-900")
+          "group flex items-center gap-1 h-8 md:h-7 pl-1 pr-1 rounded-md cursor-pointer select-none text-[13px] transition-colors " +
+          (over ? "bg-emerald-50 text-stone-900 ring-2 ring-emerald-500/50" : active ? rowActive : rowIdle)
         }
-        style={{ paddingLeft: `${depth * 14 + 6}px` }}
-        onClick={() => node.has_body ? onOpen(node) : setOpen(o => !o)}
+        onClick={() => node.has_body ? useStore.getState().openPage(node.id) : setOpen(o => !o)}
         onDoubleClick={() => canWrite && setRenaming(true)}
         draggable={canWrite && !renaming}
         onDragStart={(e) => {
@@ -337,14 +260,15 @@ function TreeNode({ node, depth, currentId, onOpen }: {
           <button
             onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
             title={open ? "折叠" : "展开"}
-            className="shrink-0 size-5 -mr-0.5 flex items-center justify-center rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200"
+            className="shrink-0 size-5 flex items-center justify-center rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200/80"
           >
             <ChevronRight className={"size-3.5 transition-transform " + (open ? "rotate-90" : "")} />
           </button>
         ) : (
-          <span className="w-[18px] shrink-0" />
+          <span className="w-5 shrink-0" />
         )}
-        <Icon className={"size-3.5 shrink-0 " + (active ? "text-stone-500" : "text-stone-400")} />
+        {/* Every row is a page; only folders without a page file get an icon, since opening them does nothing. */}
+        {!node.has_body && <Folder className="size-3.5 shrink-0 text-stone-400" />}
         {renaming ? (
           <input
             autoFocus
@@ -360,7 +284,7 @@ function TreeNode({ node, depth, currentId, onOpen }: {
             onBlur={() => setRenaming(false)}
           />
         ) : (
-          <span className="truncate flex-1" title={node.title}>{node.title}</span>
+          <span className="truncate flex-1 pl-0.5" title={node.title}>{node.title}</span>
         )}
         {node.draft && <span className="shrink-0 text-[10px] text-amber-600" title="草稿">草稿</span>}
         {/* "+" works on leaves too: the backend promotes a leaf to a bundle to host children. */}
@@ -370,22 +294,23 @@ function TreeNode({ node, depth, currentId, onOpen }: {
           </span>
         )}
       </div>
+      {/* The left border is the indent guide; it lines up under the chevron above. */}
       {open && hasChildren && (
-        <TreeList siblings={node.children || []} depth={depth + 1} currentId={currentId} onOpen={onOpen} />
+        <div className="ml-[13px] pl-1.5 border-l border-stone-200">
+          {node.children!.map(c => <TreeNode key={c.id} node={c} depth={depth + 1} currentId={currentId} />)}
+        </div>
       )}
     </div>
   );
 }
 
+const smallBtn = "size-6 flex items-center justify-center rounded text-stone-400 hover:text-emerald-600 hover:bg-stone-200/80 transition";
+
 function NewPageButton({ parentId }: { parentId: string }) {
   const [open, setOpen] = useState(false);
   return (
     <>
-      <button
-        onClick={(e) => { e.stopPropagation(); setOpen(true); }}
-        title={parentId ? "新建子页面" : "新建页面"}
-        className="size-6 flex items-center justify-center rounded text-stone-400 hover:text-emerald-600 hover:bg-stone-200/80 transition"
-      >
+      <button onClick={(e) => { e.stopPropagation(); setOpen(true); }} title={parentId ? "新建子页面" : "新建页面"} className={smallBtn}>
         <Plus className="size-3.5" />
       </button>
       {open && <NewPageDialog parentId={parentId} onClose={() => setOpen(false)} />}
@@ -399,11 +324,7 @@ function ImportButton() {
   if (!repo?.source?.length) return null; // 仓库没有配置任何 import source 就不出现入口
   return (
     <>
-      <button
-        onClick={(e) => { e.stopPropagation(); setOpen(true); }}
-        title="从 Markdown / MediaWiki 导入页面"
-        className="size-6 flex items-center justify-center rounded text-stone-400 hover:text-emerald-600 hover:bg-stone-200/80 transition"
-      >
+      <button onClick={(e) => { e.stopPropagation(); setOpen(true); }} title="从 Markdown / MediaWiki 导入页面" className={smallBtn}>
         <FileUp className="size-3.5" />
       </button>
       {open && <ImportDialog source={repo.source} onClose={() => setOpen(false)} />}
@@ -411,9 +332,9 @@ function ImportButton() {
   );
 }
 
-// Portaled to <body>: the sidebar drawer is transformed, which would otherwise trap position:fixed.
 export function NewPageDialog({ parentId, onClose }: { parentId: string; onClose(): void }) {
   const currentRepo = useStore(s => s.currentRepo);
+  const parentTitle = useStore(s => pagePath(s.tree, parentId).at(-1)?.title);
   const [title, setTitle] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const canCreate = !!title.trim();
@@ -434,35 +355,27 @@ export function NewPageDialog({ parentId, onClose }: { parentId: string; onClose
     }
   };
 
-  return createPortal(
-    <div className={`${overlay} flex items-start justify-center pt-[18vh] px-4`} onClick={(e) => { e.stopPropagation(); onClose(); }}>
-      <div className="bg-white rounded-xl w-full max-w-sm shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
-        <div className="px-5 pt-5 pb-3">
-          <h3 className="font-semibold text-sm text-stone-900">{parentId ? "新建子页面" : "新建页面"}</h3>
-          <p className="text-xs text-stone-500 mt-0.5">{parentId ? "放在当前页面下面" : "放在最顶层"}</p>
-        </div>
-        <div className="px-5 pb-4">
-          <input
-            className="w-full rounded-md border border-stone-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 transition"
-            placeholder="页面标题"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void doCreate();
-              if (e.key === "Escape") onClose();
-            }}
-            autoFocus
-          />
-        </div>
-        <div className="px-5 py-3 bg-stone-50 border-t border-stone-100 flex justify-end gap-2">
-          <button onClick={onClose} className={btnGhost}>取消</button>
-          <button className={btnPrimary} disabled={!canCreate || submitting} onClick={() => void doCreate()}>
-            {submitting ? "创建中…" : "创建"}
-          </button>
-        </div>
+  return (
+    <Dialog onClose={onClose}>
+      <div className="px-5 pt-5 pb-4">
+        <h3 className="text-sm font-semibold text-stone-900">{parentId ? "新建子页面" : "新建页面"}</h3>
+        <p className="mt-0.5 text-xs text-stone-500 truncate">{parentId ? `放在「${parentTitle ?? parentId}」下面` : "放在最顶层"}</p>
+        <input
+          autoFocus
+          className={`${input} mt-4`}
+          placeholder="页面标题"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") void doCreate(); }}
+        />
       </div>
-    </div>,
-    document.body,
+      <div className={dialogFooter}>
+        <button onClick={onClose} className={btnGhost}>取消</button>
+        <button className={btnPrimary} disabled={!canCreate || submitting} onClick={() => void doCreate()}>
+          {submitting ? "创建中…" : "创建"}
+        </button>
+      </div>
+    </Dialog>
   );
 }
 
@@ -489,45 +402,30 @@ function ImportDialog({ source, onClose }: { source: string[]; onClose(): void }
     }
   };
 
-  return createPortal(
-    <div className={`${overlay} flex items-start justify-center pt-[18vh] px-4`} onClick={(e) => { e.stopPropagation(); onClose(); }}>
-      <div className="bg-white rounded-xl w-full max-w-sm shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
-        <div className="px-5 pt-5 pb-3">
-          <h3 className="font-semibold text-sm text-stone-900">导入页面</h3>
-          <p className="text-xs text-stone-500 mt-0.5">把旧文档文件转成 Markdown 放进来</p>
+  return (
+    <Dialog onClose={onClose}>
+      <div className="px-5 pt-5 pb-4 space-y-3">
+        <div>
+          <h3 className="text-sm font-semibold text-stone-900">导入页面</h3>
+          <p className="mt-0.5 text-xs text-stone-500">把旧文档文件转成 Markdown 放进来</p>
         </div>
-        <div className="px-5 pb-4 space-y-3">
-          <input
-            className="w-full rounded-md border border-stone-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 transition"
-            placeholder="页面标题"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            autoFocus
-          />
-          <select
-            value={type}
-            onChange={(e) => setType(e.target.value)}
-            className="w-full rounded-md border border-stone-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 transition"
-          >
-            {source.map(t => <option key={t} value={t}>{t === "markdown" ? "Markdown (原样)" : "MediaWiki"}</option>)}
-          </select>
-          <input
-            type="file"
-            accept={type === "markdown" ? ".md,.markdown,.txt" : ".txt,.wiki,.mediawiki,.md"}
-            onChange={(e) => {
-              setFile(e.target.files?.[0] ?? null);
-            }}
-            className="w-full text-sm text-stone-600 file:mr-3 file:rounded file:border file:border-stone-200 file:bg-stone-50 file:px-3 file:py-1.5 file:text-sm file:text-stone-700 hover:file:bg-stone-100"
-          />
-        </div>
-        <div className="px-5 py-3 bg-stone-50 border-t border-stone-100 flex justify-end gap-2">
-          <button onClick={onClose} className={btnGhost}>取消</button>
-          <button className={btnPrimary} disabled={!title.trim() || !file || busy} onClick={() => void doImport()}>
-            {busy ? "导入中…" : "导入"}
-          </button>
-        </div>
+        <input autoFocus className={input} placeholder="页面标题" value={title} onChange={(e) => setTitle(e.target.value)} />
+        <select value={type} onChange={(e) => setType(e.target.value)} className={input}>
+          {source.map(t => <option key={t} value={t}>{t === "markdown" ? "Markdown (原样)" : "MediaWiki"}</option>)}
+        </select>
+        <input
+          type="file"
+          accept={type === "markdown" ? ".md,.markdown,.txt" : ".txt,.wiki,.mediawiki,.md"}
+          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+          className="w-full text-sm text-stone-600 file:mr-3 file:rounded-md file:border file:border-stone-200 file:bg-white file:px-3 file:py-1.5 file:text-sm file:text-stone-700 hover:file:bg-stone-50"
+        />
       </div>
-    </div>,
-    document.body,
+      <div className={dialogFooter}>
+        <button onClick={onClose} className={btnGhost}>取消</button>
+        <button className={btnPrimary} disabled={!title.trim() || !file || busy} onClick={() => void doImport()}>
+          {busy ? "导入中…" : "导入"}
+        </button>
+      </div>
+    </Dialog>
   );
 }

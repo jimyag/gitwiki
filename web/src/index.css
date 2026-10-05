@@ -33,13 +33,23 @@ body {
 }
 .prose-preview sup a { text-decoration: none; padding: 0 1px; }
 
-/* GFM task lists inside the reading view */
+/* GFM task lists inside the reading view. The boxes are read-only (disabled), but should read
+   as done / not done rather than greyed out. */
 .prose-preview .contains-task-list { padding-left: 0.25rem; }
 .prose-preview .task-list-item { list-style: none; }
 .prose-preview .task-list-item input {
+  appearance: none;
+  width: 1.05em;
+  height: 1.05em;
   margin: 0 0.5rem 0 0;
-  vertical-align: -0.1em;
-  accent-color: #059669;
+  vertical-align: -0.15em;
+  border: 1.5px solid #d6d3d1; /* stone-300 */
+  border-radius: 0.3em;
+  background: #fff;
+}
+.prose-preview .task-list-item input:checked {
+  border-color: #059669; /* emerald-600 */
+  background: #059669 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-7'/%3E%3C/svg%3E") center / 80% no-repeat;
 }
 
 /* Hugo shortcodes ({{< … >}}) only render on the Hugo site; the wiki shows each as a chip. */

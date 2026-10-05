@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { MessageSquare, SendHorizonal } from "lucide-react";
+import { MessageSquare, TextQuote, X } from "lucide-react";
 import { toast } from "sonner";
 import { useStore } from "../store";
 import { api, type Comment, type CommentAnchor } from "../lib/api";
 import { formatRelativeTime } from "../lib/format";
-import { btnPrimary } from "./ui";
+import { Avatar, btnPrimary, iconBtn } from "./ui";
 
 // 页面评论。存到仓库的 .comments/<page>.json，不混进正文；不发即时持久化时，作者点“发送”后
 // 先存在服务器内存里，只对本机可见，他之后点“保存评论”才真的提交。
@@ -14,7 +14,6 @@ export function CommentsPanel({ repo, pageId, body, onClose }: {
   body: string; // current body for re-finding an anchor's position in the text
   onClose(): void;
 }) {
-  const user = useStore(s => s.user);
   const commentsRev = useStore(s => s.commentsRev);
   const [items, setItems] = useState<Comment[] | null>(null);
   const [text, setText] = useState("");
@@ -61,67 +60,65 @@ export function CommentsPanel({ repo, pageId, body, onClose }: {
     }
   };
 
+  // Phones: a full-screen sheet. From sm up: a column docked next to the page.
   return (
-    <aside className="absolute right-0 inset-y-0 w-full sm:w-96 bg-white border-l border-stone-200 shadow-xl z-30 flex flex-col">
-      <div className="h-12 shrink-0 px-4 flex items-center justify-between border-b border-stone-100">
-        <div className="flex items-center gap-2 text-sm font-medium text-stone-900">
-          <MessageSquare className="size-4 text-stone-400" />评论
-          <button onClick={captureSelection} title="把当前选中的文字当作引用" className="text-xs text-emerald-700 hover:underline">引用所选</button>
-        </div>
-        <button onClick={onClose} className="text-xs text-stone-400 hover:text-stone-700">关闭</button>
+    <aside className="fixed inset-0 z-40 flex flex-col bg-white sm:static sm:z-auto sm:w-80 xl:w-96 sm:shrink-0 sm:border-l sm:border-stone-200">
+      <div className="h-12 shrink-0 flex items-center gap-2 pl-4 pr-2 border-b border-stone-200">
+        <MessageSquare className="size-4 text-stone-400" />
+        <h2 className="text-sm font-medium text-stone-900">评论</h2>
+        {!!items?.length && <span className="text-xs text-stone-400">{items.length}</span>}
+        <button onClick={onClose} title="关闭" className={`${iconBtn} ml-auto`}><X className="size-4" /></button>
       </div>
-      <div ref={listRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+      <div ref={listRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-5">
         {items === null ? (
           <div className="text-sm text-stone-400 text-center py-8">加载中…</div>
         ) : items.length === 0 ? (
           <div className="text-sm text-stone-400 text-center py-8">还没有评论</div>
-        ) : items.map(c => <Bubble key={c.id} c={c} body={body} mine={c.by === user?.login} />)}
+        ) : items.map(c => <CommentItem key={c.id} c={c} body={body} />)}
       </div>
-      {user ? (
-        <form
-          className="shrink-0 border-t border-stone-100 p-3 flex flex-col gap-2"
-          onSubmit={(e) => { e.preventDefault(); void send(true); }}
-        >
-          {anchor && (
-            <div className="text-xs text-amber-800 bg-amber-50 border-l-2 border-amber-400 px-2 py-1 rounded line-clamp-2 flex items-start gap-1">
-              <span className="flex-1 truncate">{anchor.quote}</span>
-              <button type="button" onClick={() => setAnchor(null)} className="text-amber-600 hover:underline shrink-0">移除</button>
-            </div>
-          )}
-          <div className="flex items-end gap-2">
-            <textarea
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              rows={3}
-              placeholder="说点什么。点上面的“引用所选”可以把选中的正文带进来。"
-              className="flex-1 resize-none rounded-md border border-stone-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 transition"
-            />
-            <button type="submit" disabled={busy || !text.trim()} title="发送" className={`${btnPrimary} self-end`}>
-              <SendHorizonal className="size-4" />
-            </button>
+      <form className="shrink-0 border-t border-stone-200 p-3" onSubmit={(e) => { e.preventDefault(); void send(true); }}>
+        {anchor && (
+          <div className="mb-2 flex items-start gap-2 rounded-r border-l-2 border-amber-400 bg-amber-50 px-2 py-1 text-xs text-amber-900">
+            <span className="flex-1 line-clamp-2">{anchor.quote}</span>
+            <button type="button" onClick={() => setAnchor(null)} className="shrink-0 text-amber-700 hover:underline">移除</button>
           </div>
-        </form>
-      ) : (
-        <div className="border-t border-stone-100 p-4 text-sm text-stone-400 text-center">登录后才能评论</div>
-      )}
+        )}
+        <div className="rounded-lg border border-stone-200 bg-white transition focus-within:border-emerald-500 focus-within:ring-2 focus-within:ring-emerald-500/20">
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            rows={3}
+            placeholder="写评论…"
+            className="block w-full resize-none bg-transparent px-3 pt-2 text-sm text-stone-900 outline-none placeholder:text-stone-400"
+          />
+          <div className="flex items-center gap-2 p-1.5">
+            <button
+              type="button"
+              onClick={captureSelection}
+              title="先在正文里选中一段，再点这里，评论会带上这段引用"
+              className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-xs text-stone-500 hover:bg-stone-100 hover:text-stone-800 transition"
+            >
+              <TextQuote className="size-3.5" />引用所选
+            </button>
+            <button type="submit" disabled={busy || !text.trim()} className={`${btnPrimary} ml-auto`}>发送</button>
+          </div>
+        </div>
+      </form>
     </aside>
   );
 }
 
-function Bubble({ c, body, mine }: { c: Comment; body: string; mine: boolean }) {
+function CommentItem({ c, body }: { c: Comment; body: string }) {
   return (
-    <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
-      <div className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${mine ? "bg-emerald-50" : "bg-stone-50"}`}>
-        <div className="flex items-baseline gap-2 mb-1">
-          <span className="font-medium text-stone-800 text-xs">{c.name || c.by}</span>
-          <span className="text-[11px] text-stone-400" title={new Date(c.at).toLocaleString()}>
-            {formatRelativeTime(c.at)}
-          </span>
+    <div className="flex gap-2.5">
+      <Avatar login={c.by} name={c.name} className="size-6 text-[10px] mt-0.5" />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-2">
+          <span className="text-[13px] font-medium text-stone-900 truncate">{c.name || c.by}</span>
+          <span className="shrink-0 text-xs text-stone-400" title={new Date(c.at).toLocaleString()}>{formatRelativeTime(c.at)}</span>
         </div>
-        {c.anchor && (
-          <AnchorPill anchor={c.anchor} body={body} />
-        )}
-        <div className="whitespace-pre-wrap leading-relaxed text-stone-800">{c.text}</div>
+        {c.anchor && <AnchorPill anchor={c.anchor} body={body} />}
+        <div className="mt-0.5 whitespace-pre-wrap text-sm leading-relaxed text-stone-700">{c.text}</div>
       </div>
     </div>
   );
@@ -152,7 +149,7 @@ function AnchorPill({ anchor, body }: { anchor: CommentAnchor; body: string }) {
   return (
     <button
       onClick={jump}
-      className="block mb-1.5 max-w-full text-left text-xs text-amber-800 bg-amber-50 border-l-2 border-amber-400 px-2 py-1 rounded truncate"
+      className="block mt-1 mb-1.5 max-w-full truncate rounded-r border-l-2 border-amber-300 bg-amber-50/70 px-2 py-1 text-left text-xs text-stone-600 hover:bg-amber-50 transition"
       title="跳到原文"
     >
       {anchor.quote}

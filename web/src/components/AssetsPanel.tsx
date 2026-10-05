@@ -4,7 +4,7 @@ import { api } from "../lib/api";
 import { Copy, Download, FileIcon, ImageIcon, Paperclip, Trash2, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { attachmentName as displayName } from "../lib/format";
-import { btnOutline, overlay } from "./ui";
+import { Dialog, btnOutline } from "./ui";
 
 const imageName = /\.(png|jpe?g|gif|webp|svg|avif)$/i;
 
@@ -51,55 +51,53 @@ export function AssetsPanel({ body, canWrite, onUpload, onClose }: {
   };
 
   return (
-    <div className={`${overlay} flex items-center justify-center p-4`} onClick={onClose}>
-      <div className="bg-white rounded-xl w-full max-w-[600px] max-h-[75vh] shadow-2xl overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
-        <div className="h-12 shrink-0 px-4 border-b border-stone-200 flex items-center gap-2">
-          <Paperclip className="size-4 text-stone-400" />
-          <div className="text-sm font-medium text-stone-900">附件</div>
-          {assets && <div className="text-xs text-stone-400">{assets.length} 个</div>}
-          {canWrite && (
-            <>
-              <button onClick={() => input.current?.click()} className={`${btnOutline} ml-auto h-7`}>
-                <Upload className="size-3.5" />上传
-              </button>
-              <input
-                ref={input}
-                type="file"
-                multiple
-                hidden
-                onChange={(e) => { const files = [...(e.target.files ?? [])]; e.target.value = ""; void upload(files); }}
-              />
-            </>
-          )}
-          <button onClick={onClose} title="关闭" className={`${canWrite ? "" : "ml-auto "}p-1 rounded text-stone-400 hover:text-stone-600 hover:bg-stone-100`}>
-            <X className="size-4" />
-          </button>
-        </div>
-        <div className="flex-1 overflow-auto p-3">
-          {assets === null && <div className="py-8 text-center text-xs text-stone-400">加载中…</div>}
-          {assets?.length === 0 && (
-            <div className="py-12 text-center text-xs text-stone-400 space-y-2">
-              <ImageIcon className="size-8 mx-auto text-stone-300" />
-              <div>本页还没有附件</div>
-              {canWrite && <div>在编辑器里粘贴图片，或用工具栏的回形针上传任意文件</div>}
-            </div>
-          )}
-          {!!assets?.length && (
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {assets.map(name => (
-                <AssetCard
-                  key={name}
-                  url={api.assetUrl(currentRepo!, pageId!, name)}
-                  name={name}
-                  onCopy={() => copyRef(name)}
-                  onDelete={canWrite ? () => void remove(name) : undefined}
-                />
-              ))}
-            </div>
-          )}
-        </div>
+    <Dialog onClose={onClose} center className="max-w-[600px] max-h-[75vh] flex flex-col">
+      <div className="h-12 shrink-0 px-4 border-b border-stone-200 flex items-center gap-2">
+        <Paperclip className="size-4 text-stone-400" />
+        <div className="text-sm font-medium text-stone-900">附件</div>
+        {assets && <div className="text-xs text-stone-400">{assets.length} 个</div>}
+        {canWrite && (
+          <>
+            <button onClick={() => input.current?.click()} className={`${btnOutline} ml-auto`}>
+              <Upload className="size-3.5" />上传
+            </button>
+            <input
+              ref={input}
+              type="file"
+              multiple
+              hidden
+              onChange={(e) => { const files = [...(e.target.files ?? [])]; e.target.value = ""; void upload(files); }}
+            />
+          </>
+        )}
+        <button onClick={onClose} title="关闭" className={`${canWrite ? "" : "ml-auto "}p-1 rounded text-stone-400 hover:text-stone-600 hover:bg-stone-100`}>
+          <X className="size-4" />
+        </button>
       </div>
-    </div>
+      <div className="flex-1 overflow-auto p-3">
+        {assets === null && <div className="py-8 text-center text-xs text-stone-400">加载中…</div>}
+        {assets?.length === 0 && (
+          <div className="py-12 text-center text-xs text-stone-400 space-y-2">
+            <ImageIcon className="size-8 mx-auto text-stone-300" />
+            <div>本页还没有附件</div>
+            {canWrite && <div>在编辑器里粘贴图片，或用工具栏的回形针上传任意文件</div>}
+          </div>
+        )}
+        {!!assets?.length && (
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {assets.map(name => (
+              <AssetCard
+                key={name}
+                url={api.assetUrl(currentRepo!, pageId!, name)}
+                name={name}
+                onCopy={() => copyRef(name)}
+                onDelete={canWrite ? () => void remove(name) : undefined}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </Dialog>
   );
 }
 

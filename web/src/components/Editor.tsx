@@ -10,7 +10,7 @@ import { pushRecent } from "../lib/recents";
 import { sendEditing } from "../lib/ws";
 import { connectPresence, disconnectPresence } from "../lib/ws";
 import { toast } from "sonner";
-import { ExternalLink, Eye, History, Link2, Paperclip, Pencil, Save, Tag, MessageSquare } from "lucide-react";
+import { Eye, Link2, Pencil, Save } from "lucide-react";
 import { DiffView } from "./editor/DiffView";
 import { AssetsPanel } from "./AssetsPanel";
 import { HistoryPanel } from "./HistoryPanel";
@@ -19,7 +19,7 @@ import { RecentChanges } from "./RecentChanges";
 import { CommentsPanel } from "./CommentsPanel";
 import { Preview, type Heading } from "./Preview";
 import { Toc } from "./Toc";
-import { btnGhost, btnOutline, btnPrimary, iconBtn } from "./ui";
+import { Avatar, btnGhost, btnOutline, btnPrimary } from "./ui";
 
 interface LoadedPage {
   title: string;
@@ -68,7 +68,8 @@ export function Editor() {
   const [titleInput, setTitleInput] = useState("");
   const [meta, setMeta] = useState<Meta>(emptyMeta);
   const [stored, setStored] = useState<Draft | null>(null); // an earlier session's unsaved edits
-  const [panel, setPanel] = useState<"assets" | "history" | "comments" | null>(null);
+  const panel = useStore(s => s.panel);
+  const setPanel = useStore(s => s.setPanel);
   const user = useStore(s => s.user);
   const [backlinks, setBacklinks] = useState<PageRef[]>([]);
   // The TopBar renders an empty #page-actions slot; this page's buttons are portaled into it.
@@ -279,61 +280,39 @@ export function Editor() {
     );
   }
   const editing = mode === "edit";
-  const siteUrl = repoInfo?.site_url && !loaded?.meta.draft && !missingHome
-    ? repoInfo.site_url.replace(/\/+$/, "") + (isHome ? "/" : `/${pageId}/`)
-    : null;
 
   return (
-    <div className="relative flex-1 flex flex-col overflow-hidden bg-white">
-      {actionsSlot && createPortal(
-        <>
-          {conflict ? null : editing ? (
-            <>
-              <button onClick={() => setMode("view")} title="预览，未保存的修改会保留" className={btnGhost}>
-                <Eye className="size-4" /><span className="hidden sm:inline">预览</span>
-              </button>
-              <button onClick={() => void doSave()} disabled={saveStatus === "saving"} title="保存 (⌘S)" className={btnPrimary}>
-                <Save className="size-4" />保存
-              </button>
-            </>
-          ) : canWrite && (
-            <button
-              onClick={() => {
-                if (othersEditing.length > 0 &&
-                    !confirm(othersEditing.map(p => p.name || p.user).join("、") + " 正在编辑这一页。现在打开编辑器，你们的修改保存时会自动合并，改到同一处时需要人工挑。继续？")) return;
-                setMode("edit");
-              }}
-              disabled={loaded === null}
-              className={btnOutline}
-            >
-              <Pencil className="size-3.5" />编辑
+    // The comments panel docks on the right and the page gives it room, instead of lying on top.
+    <div className="flex-1 min-h-0 flex bg-white">
+      <div className="relative flex-1 min-w-0 flex flex-col overflow-hidden">
+      {actionsSlot && !conflict && createPortal(
+        editing ? (
+          <>
+            <button onClick={() => setMode("view")} title="预览，未保存的修改会保留" className={btnGhost}>
+              <Eye className="size-4" /><span className="hidden sm:inline">预览</span>
             </button>
-          )}
-          {siteUrl && (
-            <a href={siteUrl} target="_blank" rel="noopener noreferrer" title="在站点中查看" className={iconBtn}>
-              <ExternalLink className="size-4" />
-            </a>
-          )}
-          <button onClick={() => setPanel("history")} disabled={missingHome} title="页面历史" className={iconBtn}>
-            <History className="size-4" />
-          </button>
-          <button onClick={() => setPanel("assets")} title="附件" className={iconBtn}>
-            <Paperclip className="size-4" />
-          </button>
-          {user && (
-            <button onClick={() => setPanel("comments")} title="评论" className={iconBtn}>
-              <MessageSquare className="size-4" />
+            <button onClick={() => void doSave()} disabled={saveStatus === "saving"} title="保存 (⌘S)" className={btnPrimary}>
+              <Save className="size-4" />保存
             </button>
-          )}
-        </>,
+          </>
+        ) : canWrite && (
+          <button
+            onClick={() => {
+              if (othersEditing.length > 0 &&
+                  !confirm(othersEditing.map(p => p.name || p.user).join("、") + " 正在编辑这一页。现在打开编辑器，你们的修改保存时会自动合并，改到同一处时需要人工挑。继续？")) return;
+              setMode("edit");
+            }}
+            disabled={loaded === null}
+            className={btnOutline}
+          >
+            <Pencil className="size-3.5" />编辑
+          </button>
+        ),
         actionsSlot,
       )}
 
       {panel === "assets" && (
         <AssetsPanel body={draft ?? loaded?.body ?? ""} canWrite={canWrite} onUpload={uploadAsset} onClose={() => setPanel(null)} />
-      )}
-      {panel === "comments" && currentRepo && pageId && user && (
-        <CommentsPanel repo={currentRepo} pageId={pageId} body={draft ?? loaded?.body ?? ""} onClose={() => setPanel(null)} />
       )}
       {panel === "history" && loaded && (
         <HistoryPanel
@@ -395,22 +374,30 @@ export function Editor() {
         <article className="w-full max-w-[720px] mx-auto px-5 sm:px-10 pt-8 sm:pt-12 pb-24">
           <h1 className={titleClass}>{titleInput || treeTitle || fallbackTitle}</h1>
 
-          <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[13px] text-stone-400">
+          <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px] text-stone-400">
             {loaded?.meta.draft && (
               <span className="rounded bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-700 ring-1 ring-amber-200" title="草稿不会发布到站点">草稿</span>
             )}
             {loaded?.last_author && (
-              <span><span className="text-stone-600">{loaded.last_author}</span> 编辑于 {formatRelativeTime(loaded.last_commit_at)}</span>
+              <span className="inline-flex items-center gap-1.5">
+                <Avatar login={loaded.last_author} className="size-5 text-[9px]" />
+                <span className="text-stone-700">{loaded.last_author}</span>
+                <span title={loaded.last_commit_at && new Date(loaded.last_commit_at).toLocaleString()}>编辑于 {formatRelativeTime(loaded.last_commit_at)}</span>
+              </span>
             )}
-            {loaded?.meta.tags.map(t => (
-              <button
-                key={t}
-                onClick={() => useStore.getState().setTagsOpen(t)}
-                className="inline-flex items-center gap-1 h-6 px-2 rounded-full bg-stone-100 text-xs text-stone-600 hover:bg-stone-200 hover:text-stone-900 transition"
-              >
-                <Tag className="size-3" />{t}
-              </button>
-            ))}
+            {!!loaded?.meta.tags.length && (
+              <span className="flex flex-wrap gap-1.5">
+                {loaded.meta.tags.map(t => (
+                  <button
+                    key={t}
+                    onClick={() => useStore.getState().setTagsOpen(t)}
+                    className="h-6 px-2 rounded-md bg-stone-100 text-xs text-stone-600 hover:bg-stone-200 hover:text-stone-900 transition"
+                  >
+                    <span className="text-stone-400">#</span>{t}
+                  </button>
+                ))}
+              </span>
+            )}
           </div>
           {loaded?.meta.description && (
             <p className="mt-4 text-[17px] leading-relaxed text-stone-500">{loaded.meta.description}</p>
@@ -472,6 +459,10 @@ export function Editor() {
         </aside>
         </div>
       </div>
+      )}
+      </div>
+      {panel === "comments" && currentRepo && pageId && user && (
+        <CommentsPanel repo={currentRepo} pageId={pageId} body={draft ?? loaded?.body ?? ""} onClose={() => setPanel(null)} />
       )}
     </div>
   );

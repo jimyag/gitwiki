@@ -60,7 +60,8 @@ export const Preview = memo(function Preview({ body, onHeadings }: {
           p: ({ children }) => <p className="my-4 leading-[1.8]">{children}</p>,
           ul: ({ className, children }) => <ul className={`${className ?? ""} my-4 pl-6 space-y-1 list-disc marker:text-stone-300`}>{children}</ul>,
           ol: ({ className, children }) => <ol className={`${className ?? ""} my-4 pl-6 space-y-1 list-decimal marker:text-stone-400`}>{children}</ol>,
-          li: ({ className, children }) => <li className={`${className ?? ""} leading-[1.8] pl-0.5`}>{children}</li>,
+          // A list inside an item keeps close to it, rather than the gap between paragraphs.
+          li: ({ className, children }) => <li className={`${className ?? ""} leading-[1.8] pl-0.5 [&>ol]:my-1 [&>ul]:my-1`}>{children}</li>,
           // Only inline code reaches here: fenced blocks are rendered whole by `pre` below.
           code: ({ children }) => (
             <code className="bg-stone-100 text-stone-800 rounded px-1.5 py-0.5 text-[0.875em] font-mono">{children}</code>
