@@ -348,4 +348,6 @@ curl --fail --silent --show-error http://127.0.0.1:8080/api/me
 
 自动化问题及修复：[原 Check 运行](https://github.com/jimyag/gitwiki/actions/runs/37279565639) 中，lint / test 都因 `pattern all:dist: no matching files found` 失败，build 作业通过；[原 Release 运行](https://github.com/jimyag/gitwiki/actions/runs/37281114676) 也有同样的问题。现已让 Check 的 lint / test 作业先构建前端，并将 Release 的构建放到检查之前。Release 的增量 lint 改为以 `v0.1.0` 为基线，避免新 tag 的全零比较 SHA 导致检查全部历史问题。Release 新增手动入口：选择 `main` 时验证并构建快照，选择 `v*` tag 时正式发布。`v0.1.0` 本身仍是本地验证后上传的版本，旧 tag 上的失败记录不会因此变绿。
 
+[修复后的 Check 运行](https://github.com/jimyag/gitwiki/actions/runs/37283783436) 中，构建、lint 和测试全部通过，覆盖率上传仍失败。Codecov CLI 下载端点存在 TLS 握手错误，`ingest.codecov.io` 的证书已过期；现改用 PyPI 安装 CLI，并通过 TLS 正常的 `https://codecov.io` 上传，保留 OIDC 和上传失败时报错。请求已到达服务，但返回 `Repository not found`，仍需在 Codecov 检查 `jimyag/gitwiki` 的接入及 GitHub 仓库访问权限。本轮访问 Codecov 管理页面也遇到 TLS 握手错误，因此尚未完成该服务侧配置，不能将 Check 视为全绿。
+
 仍未验证：新的 GitHub OAuth App 注册及真实回调、真实编辑后的 GitHub push、双账号协作、Linux systemd 常驻和开机启动、Certbot 证书签发和续期及公网 HTTPS。这些需要在目标部署上按前面的验收清单执行；现有后端测试不能替代真实登录和远端写入验收。会话 cookie 的 `Secure` 标记缺口尚未修复，本轮没有修改业务代码。
