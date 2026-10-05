@@ -22,6 +22,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Build frontend
+        run: cd web && bun install --frozen-lockfile && bun run build
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:
@@ -43,6 +48,11 @@ jobs:
       - uses: arduino/setup-task@v3
         with:
           repo-token: ${{ github.token }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Build frontend
+        run: cd web && bun install --frozen-lockfile && bun run build
       - name: Test
         run: task test
       - name: Upload coverage

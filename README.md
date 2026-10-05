@@ -36,6 +36,10 @@ gitwiki 把文档直接存进 Git 仓库，登录、权限和协作都基于 Git
 
 ## 安装
 
+第一次部署请阅读 [从零部署和使用文档](docs/usage.md)，包括文档仓库初始化、GitHub OAuth、systemd、HTTPS 和部署验收。
+
+服务器运行时需要安装 Git；Go 和 Bun 只用于源码构建。
+
 ### 从 Release 下载
 
 到 [GitHub Releases](https://github.com/jimyag/gitwiki/releases/latest) 下载对应平台的二进制和 `checksums.txt`。产物名为：
@@ -46,12 +50,14 @@ gitwiki_<os>_<arch>
 
 目前只发布裸二进制，不发布容器镜像。
 
+首个版本为 [v0.1.0](https://github.com/jimyag/gitwiki/releases/tag/v0.1.0)，使用文档中提供了下载和校验命令。
+
 ### 从源码构建
 
 要求：Go 1.24+、Bun 1.3+。
 
 ```bash
-cd web && bun install && bun run build && cd ..
+cd web && bun install --frozen-lockfile && bun run build && cd ..
 go build -trimpath -ldflags "-s -w" -o gitwiki ./cmd/gitwiki
 ```
 
@@ -66,6 +72,8 @@ cp config.yaml.example config.yaml
 ```
 
 打开 `http://localhost:8080`。
+
+文档仓库需要有首个提交和配置的分支；建议先创建 `content/_index.md` 作为首页。私有仓库启用公开阅读时，先登录打开 Wiki 完成首次克隆，再让未登录访客访问含仓库短名的路径。
 
 配置示例：
 
@@ -113,18 +121,20 @@ task build              # 构建前端，再嵌入后端二进制
 task release-snapshot   # 本地跑 GoReleaser 快照，验证发布配置
 ```
 
-前端改动后需要先 `bun --cwd web run build`（或 `task build`），产物落在 `web/dist`，再经 GoReleaser/`go build` 拷到 `internal/web/dist` 由 `go:embed` 打进二进制。
+前端改动后需要先 `bun --cwd web run build`（或 `task build`），Vite 直接将产物输出到 `internal/web/dist`，再由 `go:embed` 打进二进制。
 
 ## 发布
 
-打 `v*` tag 后，CI 会依次执行 lint、test、build，再由 GoReleaser 产出 Linux / macOS / Windows 裸二进制和 `checksums.txt`，生成 GitHub Release。发布说明基于两个 tag 之间的 commit：
+发布工作流由 `v*` tag 触发，配置为验证后由 GoReleaser 产出 Linux / macOS / Windows 裸二进制和 `checksums.txt`，生成 GitHub Release。发布说明基于两个 tag 之间的 commit。例如下一个版本：
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 发布前可用 `task release-snapshot` 本地验证 GoReleaser 配置和 artifact。
+
+工作流先构建前端，再执行 Go 检查。Release 的 lint 以 `v0.1.0` 为基线，只检查之后新增的问题。在 Actions 中手动运行 Release 并选择 `main`，会验证并构建快照，不发布新版本；`v*` tag 触发正式发布。`v0.1.0` 是本地验证后上传的产物，详细验证和限制见 [使用文档](docs/usage.md#本轮验证记录)。
 
 ## 实现说明
 

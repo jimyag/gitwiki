@@ -1,6 +1,7 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - "v*"
@@ -17,6 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -27,16 +30,16 @@ jobs:
       - uses: arduino/setup-task@v3
         with:
           repo-token: ${{ github.token }}
+      - name: Build
+        run: task build
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:
           version: latest
-          only-new-issues: true
-          args: ./...
+          # New tag pushes have no comparison SHA; use the first release as the lint baseline.
+          args: --new-from-rev=v0.1.0 ./...
       - name: Test
         run: go test -count=1 ./...
-      - name: Build
-        run: task build
 
   release:
     name: Build and Release
@@ -66,6 +69,6 @@ jobs:
         with:
           distribution: goreleaser
           version: latest
-          args: release --clean
+          args: release --clean ${{ github.ref_type != 'tag' && '--snapshot' || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
