@@ -49,6 +49,10 @@ const post = (body: unknown): RequestInit => ({ method: "POST", headers: jsonHea
 const q = encodeURIComponent;
 
 export interface User { login: string; name: string; email: string }
+export interface SyncStatus {
+  last_pull?: string; pending: number; running: boolean; queued: boolean;
+  pull_error?: string; push_error?: string;
+}
 // can_write: the user may push to the GitHub repo; without it the wiki is read-only for them.
 export interface Repo { slug: string; title: string; can_write: boolean; site_url?: string; source?: string[] }
 export interface PageMeta {
@@ -90,6 +94,8 @@ export interface Comment {
 export const api = {
   // repos: the configured repos the user can read (present when logged in).
   me: () => req<{ user: User | null; repos?: Repo[] }>("/api/me"),
+  syncStatus: (slug: string) => req<SyncStatus>(`/api/repos/${slug}/sync`),
+  syncNow: (slug: string) => req<SyncStatus>(`/api/repos/${slug}/sync`, post({})),
   pageTree: (slug: string) => req<PageMeta>(`/api/repos/${slug}/pages`),
   readPage: (slug: string, id: string) => req<PageContent>(`/api/repos/${slug}/page?id=${q(id)}`),
   savePage: async (slug: string, p: { id: string; title: string; body: string; meta?: Meta; base_sha: string; message?: string }) => {

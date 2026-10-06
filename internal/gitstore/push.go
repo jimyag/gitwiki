@@ -7,7 +7,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -19,6 +21,34 @@ import (
 
 // pullInterval is how often origin is checked for commits made outside gitwiki.
 const pullInterval = time.Minute
+
+type SyncStatus struct {
+	LastPull  time.Time `json:"last_pull,omitzero"`
+	Pending   int       `json:"pending"`
+	Running   bool      `json:"running"`
+	Queued    bool      `json:"queued"`
+	PullError string    `json:"pull_error,omitempty"`
+	PushError string    `json:"push_error,omitempty"`
+}
+
+// Status reads local state only; checking it never contacts origin.
+func (r *Repo) Status(ctx context.Context) (SyncStatus, error) {
+	r.syncMu.Lock()
+	status := r.syncStatus
+	r.syncMu.Unlock()
+	status.Queued = len(r.pushKick) > 0
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out, err := r.gitOut(ctx, "rev-list", "--count", "origin/"+r.cfg.Branch+"..HEAD")
+	if err != nil {
+		return status, err
+	}
+	status.Pending, err = strconv.Atoi(strings.TrimSpace(string(out)))
+	return status, err
+}
+
+// RequestSync wakes the existing loop, including a push waiting to retry. Requests coalesce.
+func (r *Repo) RequestSync(token string) { r.schedulePush(token) }
 
 // StartSync starts every repo's sync loop. onSync gets the outcome of each push attempt
 // (nil: origin has all local commits) so clients can be told when pushing is failing;
@@ -51,18 +81,22 @@ func (r *Repo) schedulePush(token string) {
 }
 
 func (r *Repo) syncLoop(onSync func(error), onPull func([]string)) {
-	pull := time.Tick(pullInterval)
+	tick := time.Tick(pullInterval)
+	pull := func() {
+		pages, err := r.pullOnce()
+		if err != nil {
+			log.Printf("pull %s: %v", r.cfg.Slug, err)
+		} else if len(pages) > 0 {
+			onPull(pages)
+		}
+	}
 	for {
 		select {
 		case <-r.pushKick:
 			r.pushUntilDone(onSync)
-		case <-pull:
-			pages, err := r.pullOnce()
-			if err != nil {
-				log.Printf("pull %s: %v", r.cfg.Slug, err)
-			} else if len(pages) > 0 {
-				onPull(pages)
-			}
+			pull()
+		case <-tick:
+			pull()
 		}
 	}
 }
@@ -85,7 +119,20 @@ func (r *Repo) pushUntilDone(onSync func(error)) {
 
 // pullOnce fast-forwards the working copy to origin and returns the pages that changed. It
 // leaves local commits that wait for a push alone: pushOnce rebases them onto origin anyway.
-func (r *Repo) pullOnce() ([]string, error) {
+func (r *Repo) pullOnce() (pages []string, err error) {
+	r.syncMu.Lock()
+	r.syncStatus.Running = true
+	r.syncMu.Unlock()
+	defer func() {
+		err = redact(err, "")
+		r.syncMu.Lock()
+		defer r.syncMu.Unlock()
+		r.syncStatus.Running = false
+		r.syncStatus.PullError = ""
+		if err != nil {
+			r.syncStatus.PullError = err.Error()
+		}
+	}()
 	if _, err := os.Stat(filepath.Join(r.cfg.Workdir, ".git")); err != nil {
 		return nil, nil // not cloned yet: the first request clones the current state
 	}
@@ -119,19 +166,34 @@ func (r *Repo) pullOnce() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var pages []string
 	for f := range strings.FieldsSeq(string(out)) {
 		if id, ok := r.pageOfFile(f); ok && !slices.Contains(pages, id) {
 			pages = append(pages, id)
 		}
 	}
+	r.syncMu.Lock()
+	r.syncStatus.LastPull = time.Now()
+	r.syncMu.Unlock()
 	return pages, nil
 }
 
 // pushOnce pushes the branch to origin. If origin has commits made outside gitwiki, the local
 // ones are rebased onto them and pushed again. A rebase conflict is returned rather than
 // resolved: both sides were already reported as saved, so a person has to pick.
-func (r *Repo) pushOnce() error {
+func (r *Repo) pushOnce() (err error) {
+	r.syncMu.Lock()
+	r.syncStatus.Running = true
+	r.syncMu.Unlock()
+	defer func() {
+		err = redact(err, "")
+		r.syncMu.Lock()
+		defer r.syncMu.Unlock()
+		r.syncStatus.Running = false
+		r.syncStatus.PushError = ""
+		if err != nil {
+			r.syncStatus.PushError = err.Error()
+		}
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	// Nothing to deliver: skip the round trip, and the error a push gives on a repo that this
@@ -146,7 +208,7 @@ func (r *Repo) pushOnce() error {
 			return redact(err, token)
 		}
 	}
-	err := r.git(ctx, "push", "origin", r.cfg.Branch)
+	err = r.git(ctx, "push", "origin", r.cfg.Branch)
 	if err != nil && strings.Contains(err.Error(), "[rejected]") {
 		if err = r.git(ctx, "fetch", "origin", r.cfg.Branch); err == nil {
 			if err = r.rebaseOntoOrigin(ctx); err == nil {
@@ -172,9 +234,18 @@ func (r *Repo) rebaseOntoOrigin(ctx context.Context) error {
 }
 
 // redact keeps the token out of errors that are logged and sent to clients.
+var credentialURL = regexp.MustCompile(`https://[^/\s]+@github\.com`)
+
 func redact(err error, token string) error {
-	if err == nil || token == "" || !strings.Contains(err.Error(), token) {
+	if err == nil {
+		return nil
+	}
+	message := credentialURL.ReplaceAllString(err.Error(), "https://***@github.com")
+	if token != "" {
+		message = strings.ReplaceAll(message, token, "***")
+	}
+	if message == err.Error() {
 		return err
 	}
-	return errors.New(strings.ReplaceAll(err.Error(), token, "***"))
+	return errors.New(message)
 }

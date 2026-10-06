@@ -36,6 +36,9 @@ type Repo struct {
 	pushKick chan struct{}          // wakes the push loop; buffered(1) so requests coalesce
 	token    atomic.Pointer[string] // newest writer's GitHub token, used by the next push
 
+	syncMu     sync.Mutex
+	syncStatus SyncStatus
+
 	// lastRecentCreate dedups rapid duplicate create requests (e.g. user double-clicks
 	// "create" while a network roundtrip is outstanding). Keyed by parentID+title.
 	recentCreateMu sync.Mutex

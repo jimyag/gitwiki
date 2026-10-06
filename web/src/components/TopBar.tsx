@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, type ReactNode } from "react";
 import { useCanWrite, useRepoInfo, useStore } from "../store";
-import { api, loginUrl, type PageMeta, type PageRef } from "../lib/api";
+import { api, loginUrl, type PageMeta, type PageRef, type SyncStatus } from "../lib/api";
 import { descendants, pagePath, parentOf } from "../lib/tree";
 import { HOME } from "../lib/route";
 import { deletePage, movePage } from "../lib/actions";
@@ -53,6 +53,7 @@ export function TopBar() {
 
   const [dialog, setDialog] = useState<"create" | "rename" | "move" | "delete" | null>(null);
   const [fav, setFav] = useState(false);
+  const [syncOpen, setSyncOpen] = useState(false);
   useEffect(() => {
     if (currentRepo && currentPageId) setFav(isFavorite(currentRepo, currentPageId));
   }, [currentRepo, currentPageId]);
@@ -178,11 +179,11 @@ export function TopBar() {
         </button>
       )}
 
-      {/* Why syncing failed is for us (the server logs it); readers only need to know their work is safe. */}
-      {syncError && (
-        <span title="修改都已保存，只是暂时没能同步到站点，会自动重试" className={`${chip} border-red-200 bg-red-50 text-red-700`}>
-          <CloudOff className="size-3.5" /><span className="hidden sm:inline">同步失败</span>
-        </span>
+      {canWrite && currentRepo && (
+        <button onClick={() => setSyncOpen(true)} title="同步状态" className={`${chip} ${syncError ? "border-red-200 bg-red-50 text-red-700" : "border-stone-200 text-stone-600 hover:bg-stone-50"}`}>
+          {syncError ? <CloudOff className="size-3.5" /> : <RefreshCw className="size-3.5" />}
+          <span className="hidden sm:inline">{syncError ? "同步失败" : "同步状态"}</span>
+        </button>
       )}
 
       {!canWrite && (
@@ -245,7 +246,68 @@ export function TopBar() {
         />
       )}
       {dialog === "delete" && ctx && <DeleteDialog node={ctx.node} onClose={() => setDialog(null)} />}
+      {syncOpen && currentRepo && canWrite && <SyncDialog key={currentRepo} slug={currentRepo} onClose={() => setSyncOpen(false)} />}
     </header>
+  );
+}
+
+function SyncDialog({ slug, onClose }: { slug: string; onClose(): void }) {
+  const [status, setStatus] = useState<SyncStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [requesting, setRequesting] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function refresh() {
+      try {
+        const next = await api.syncStatus(slug);
+        if (!cancelled) { setStatus(next); setError(null); }
+      } catch (e) {
+        if (!cancelled) setError((e as Error).message);
+      } finally {
+        if (!cancelled) timer = setTimeout(refresh, 2000);
+      }
+    }
+    void refresh();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [slug]);
+
+  async function sync() {
+    setRequesting(true);
+    try {
+      setStatus(await api.syncNow(slug));
+      setError(null);
+      toast.success("已触发同步");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setRequesting(false);
+    }
+  }
+  const busy = requesting || status?.running || status?.queued;
+  return (
+    <Dialog onClose={onClose}>
+      <div className="p-5 space-y-4">
+        <h2 className="text-base font-semibold text-stone-900">同步状态</h2>
+        <p className="text-sm text-stone-500">每分钟检查 GitHub 上的更改，已保存的修改会自动推送。</p>
+        {status ? (
+          <dl className="space-y-2 text-sm text-stone-700" aria-live="polite">
+            <div className="flex justify-between gap-3"><dt>最近成功拉取</dt><dd>{status.last_pull ? new Date(status.last_pull).toLocaleString() : "尚未成功拉取"}</dd></div>
+            <div className="flex justify-between gap-3"><dt>待推送提交</dt><dd>{status.pending} 个</dd></div>
+            <div className="flex justify-between gap-3"><dt>当前状态</dt><dd>{busy ? "同步中…" : status.pull_error || status.push_error ? "同步失败，会自动重试" : "空闲"}</dd></div>
+          </dl>
+        ) : !error && <p className="text-sm text-stone-500">加载中…</p>}
+        {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
+        {status?.pull_error && <p role="alert" className="text-sm text-red-700 whitespace-pre-wrap break-all">拉取失败：{status.pull_error}</p>}
+        {status?.push_error && <p role="alert" className="text-sm text-red-700 whitespace-pre-wrap break-all">推送失败：{status.push_error}</p>}
+      </div>
+      <div className={dialogFooter}>
+        <button onClick={onClose} className={btnGhost}>关闭</button>
+        <button onClick={() => void sync()} disabled={!status || !!busy} className={btnPrimary}>
+          <RefreshCw className={`size-3.5${busy ? " animate-spin" : ""}`} />{busy ? "同步中…" : "立即同步"}
+        </button>
+      </div>
+    </Dialog>
   );
 }
 

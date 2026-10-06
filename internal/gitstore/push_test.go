@@ -1,6 +1,7 @@
 package gitstore
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,57 @@ import (
 	"github.com/jimyag/gitwiki/internal/auth"
 	"github.com/jimyag/gitwiki/internal/config"
 )
+
+func TestSyncStatus(t *testing.T) {
+	r, origin, _ := saveBehindExternalCommit(t, "content/b.md")
+	status, err := r.Status(t.Context())
+	if err != nil || status.Pending != 1 || !status.LastPull.IsZero() {
+		t.Fatalf("before sync: %+v, %v", status, err)
+	}
+	r.pushKick = make(chan struct{}, 1)
+	r.RequestSync("")
+	r.RequestSync("")
+	status, err = r.Status(t.Context())
+	if err != nil || !status.Queued || len(r.pushKick) != 1 {
+		t.Fatalf("manual requests must coalesce: %+v, %v", status, err)
+	}
+	<-r.pushKick
+	if err := r.pushOnce(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.pullOnce(); err != nil {
+		t.Fatal(err)
+	}
+	status, err = r.Status(t.Context())
+	if err != nil || status.Pending != 0 || status.LastPull.IsZero() || status.Running || status.Queued {
+		t.Fatalf("after sync: %+v, %v", status, err)
+	}
+	lastPull := status.LastPull
+	mustGit(t, r.cfg.Workdir, "remote", "set-url", "origin", origin+"-missing")
+	if _, err := r.pullOnce(); err == nil {
+		t.Fatal("pull from a missing origin succeeded")
+	}
+	status, err = r.Status(t.Context())
+	if err != nil || status.PullError == "" || status.Running || !status.LastPull.Equal(lastPull) {
+		t.Fatalf("failed pull must preserve last success: %+v, %v", status, err)
+	}
+	mustGit(t, r.cfg.Workdir, "remote", "set-url", "origin", origin)
+	if _, err := r.pullOnce(); err != nil {
+		t.Fatal(err)
+	}
+	status, err = r.Status(t.Context())
+	if err != nil || status.PullError != "" {
+		t.Fatalf("successful retry must clear the error: %+v, %v", status, err)
+	}
+}
+
+func TestRedactStoredCredentials(t *testing.T) {
+	// On restart no token is in memory, but Git can print the URL retained in .git/config.
+	err := redact(errors.New("fetch https://x-access-token:secret@github.com/o/repo.git failed"), "")
+	if strings.Contains(err.Error(), "secret") || !strings.Contains(err.Error(), "failed") {
+		t.Fatalf("unsafe or unhelpful error: %v", err)
+	}
+}
 
 // Saves return before anything reaches origin; the push loop then delivers them, rebasing
 // onto a commit that was pushed to origin from outside gitwiki in the meantime. Each save
@@ -37,6 +89,10 @@ func TestPushStopsOnConflictingExternalCommit(t *testing.T) {
 	r, origin, external := saveBehindExternalCommit(t, "content/a.md")
 	if err := waitSync(t, r); err == nil || !strings.Contains(err.Error(), "冲突") {
 		t.Fatalf("want conflict error, got %v", err)
+	}
+	status, err := r.Status(t.Context())
+	if err != nil || status.PushError == "" || status.Pending != 1 || status.Running {
+		t.Fatalf("conflict status: %+v, %v", status, err)
 	}
 	work := r.cfg.Workdir
 	if _, err := os.Stat(filepath.Join(work, ".git", "rebase-merge")); err == nil {

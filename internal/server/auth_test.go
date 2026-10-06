@@ -19,6 +19,10 @@ func (f githubTransport) RoundTrip(r *http.Request) (*http.Response, error) { re
 
 // Obtain the cookie through the real OAuth callback, then simulate a revoked token.
 func expiredSession(t *testing.T, cfg *config.Config) (*auth.Store, *http.Cookie) {
+	return githubSession(t, cfg, http.StatusUnauthorized, `{"message":"Bad credentials"}`)
+}
+
+func githubSession(t *testing.T, cfg *config.Config, repoStatus int, repoBody string) (*auth.Store, *http.Cookie) {
 	t.Helper()
 	oldClient := http.DefaultClient
 	http.DefaultClient = &http.Client{Transport: githubTransport(func(r *http.Request) (*http.Response, error) {
@@ -29,7 +33,7 @@ func expiredSession(t *testing.T, cfg *config.Config) (*auth.Store, *http.Cookie
 		case "api.github.com/user":
 			body = `{"login":"u"}`
 		case "api.github.com/repos/o/repo":
-			status, body = http.StatusUnauthorized, `{"message":"Bad credentials"}`
+			status, body = repoStatus, repoBody
 		default:
 			t.Errorf("unexpected GitHub request: %s", r.URL.Host+r.URL.Path)
 			status = http.StatusInternalServerError
@@ -52,6 +56,29 @@ func expiredSession(t *testing.T, cfg *config.Config) (*auth.Store, *http.Cookie
 	}
 	t.Fatal("callback did not set a session cookie")
 	return nil, nil
+}
+
+func TestSyncRequiresWriteAccess(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		t.Run(method, func(t *testing.T) {
+			cfg := &config.Config{SessionSecret: "test", Repos: []config.Repo{{Slug: "wiki", Github: "o/repo", ReadPublic: true}}}
+			as, cookie := githubSession(t, cfg, http.StatusOK, `{"permissions":{"pull":true,"push":false}}`)
+			s := New(cfg, as, nil, nil, nil)
+			for _, signedIn := range []bool{false, true} {
+				r := httptest.NewRequest(method, "/api/repos/wiki/sync", nil)
+				want := http.StatusUnauthorized
+				if signedIn {
+					r.AddCookie(cookie)
+					want = http.StatusForbidden
+				}
+				w := httptest.NewRecorder()
+				s.Handler().ServeHTTP(w, r)
+				if w.Code != want {
+					t.Fatalf("signed in %v: got %d, want %d", signedIn, w.Code, want)
+				}
+			}
+		})
+	}
 }
 
 func TestExpiredSession(t *testing.T) {

@@ -49,6 +49,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /auth/callback", s.auth.HandleCallback)
 	s.mux.HandleFunc("GET /logout", s.logout)
 	s.mux.HandleFunc("GET /api/me", s.me)
+	s.mux.HandleFunc("GET /api/repos/{slug}/sync", s.write(s.syncStatus))
+	s.mux.HandleFunc("POST /api/repos/{slug}/sync", s.write(s.syncNow))
 
 	// Reading needs read access to the GitHub repo; changing anything needs push access.
 	s.mux.HandleFunc("GET /api/repos/{slug}/pages", s.read(s.pageTree))
@@ -163,6 +165,20 @@ func (s *Server) spa(w http.ResponseWriter, r *http.Request) {
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	auth.ClearSession(w)
 	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+func (s *Server) syncStatus(w http.ResponseWriter, r *http.Request, c *call) {
+	status, err := c.repo.Status(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, status)
+}
+
+func (s *Server) syncNow(w http.ResponseWriter, r *http.Request, c *call) {
+	c.repo.RequestSync(c.user.Token)
+	s.syncStatus(w, r, c)
 }
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
