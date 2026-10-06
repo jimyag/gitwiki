@@ -11,8 +11,10 @@ import { remoteCursorsExtension } from "./cursorOverlay";
 const theme = EditorView.theme({
   "&": { fontSize: "16px", backgroundColor: "#fff" },
   "&.cm-focused": { outline: "none" },
-  ".cm-scroller": { fontFamily: "var(--font-sans)", lineHeight: "1.8" },
-  ".cm-content": { padding: "12px 0 40vh", caretColor: "#1c1917" },
+  // Lines no longer than the reading view's, centred with their gutter when the editor is wider
+  // than that (fullscreen).
+  ".cm-scroller": { fontFamily: "var(--font-sans)", lineHeight: "1.8", justifyContent: "center" },
+  ".cm-content": { padding: "12px 0 40vh", caretColor: "#1c1917", maxWidth: "720px" },
   ".cm-line": { padding: "0 16px 0 6px" },
   ".cm-cursor": { borderLeft: "1.5px solid #1c1917" },
   ".cm-placeholder": { color: "#a8a29e" },

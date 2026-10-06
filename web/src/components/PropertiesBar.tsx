@@ -14,7 +14,7 @@ export function PropertiesBar({ meta, onChange }: { meta: Meta; onChange(m: Meta
   };
 
   return (
-    <div className="w-full max-w-[1600px] mx-auto flex flex-wrap items-center gap-x-5 gap-y-2 px-1 text-[13px] text-stone-500">
+    <div className="w-full max-w-3xl mx-auto flex flex-wrap items-center gap-x-5 gap-y-2 px-1 text-[13px] text-stone-500">
       <div className="flex flex-wrap items-center gap-1.5 min-w-0">
         <Tag className="size-3.5 shrink-0 text-stone-400" />
         {meta.tags.map(t => (

@@ -2,6 +2,7 @@ import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState, type Reac
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSlug from "rehype-slug";
+import type { Root } from "hast";
 import { AlertTriangle, Check, Copy, Info, Lightbulb, MessageSquareWarning, OctagonAlert, Paperclip } from "lucide-react";
 import { useStore } from "../store";
 import { api } from "../lib/api";
@@ -26,7 +27,18 @@ export const Preview = memo(function Preview({ body, onHeadings }: {
   const currentRepo = useStore(s => s.currentRepo);
   const pageId = useStore(s => s.currentPageId);
   const ref = useRef<HTMLElement>(null);
+  const lines = useRef<number[]>([]); // filled by rehypeLines while rendering
   const math = useMathPlugins(body);
+
+  // Each top-level block renders as one element of the article, in order: tag it with its source
+  // line, so the editor opens at the block being read and the reading view comes back to the
+  // block being edited (see Editor).
+  useLayoutEffect(() => {
+    [...(ref.current?.children ?? [])].forEach((el, i) => {
+      if (lines.current[i]) el.setAttribute("data-line", String(lines.current[i]));
+      else el.removeAttribute("data-line");
+    });
+  }, [body, math]);
 
   // rehype-slug gives headings their ids; read them back from the DOM for the TOC.
   useLayoutEffect(() => {
@@ -45,7 +57,7 @@ export const Preview = memo(function Preview({ body, onHeadings }: {
     <article ref={ref} className="prose-preview text-[16px] text-stone-700">
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkAlerts, remarkShortcodes, ...(math ? [math.remark] : [])]}
-        rehypePlugins={[rehypeSlug, ...(math ? [math.rehype] : [])]}
+        rehypePlugins={[rehypeSlug, ...(math ? [math.rehype] : []), [rehypeLines, lines]]}
         remarkRehypeOptions={{ footnoteLabel: "脚注", footnoteBackLabel: "返回正文" }}
         components={{
           img: ({ src, alt, node: _, ...rest }) => <ZoomableImage src={assetUrl(typeof src === "string" ? src : "")} alt={alt ?? ""} {...rest} />,
@@ -100,6 +112,14 @@ export const Preview = memo(function Preview({ body, onHeadings }: {
     </article>
   );
 });
+
+// rehypeLines records the source line of each top-level element, as rendered (0 for generated
+// ones, like the footnotes section).
+function rehypeLines(out: { current: number[] }) {
+  return (tree: Root) => {
+    out.current = tree.children.flatMap(n => (n.type === "element" ? [n.position?.start.line ?? 0] : []));
+  };
+}
 
 const linkClass = "text-emerald-700 underline decoration-emerald-700/30 underline-offset-[3px] hover:decoration-emerald-700";
 

@@ -2,9 +2,10 @@
 // (headings, lists, links, image upload, a table size picker …). Its own preview is off: the
 // reading view is gitwiki's. Everything ships with the app; nothing is fetched from a CDN.
 // Loaded lazily by Editor, so readers never download it.
-import { useEffect, useRef, useState } from "react";
-import { MdEditor, NormalToolbar, config, type Insert, type ToolbarNames } from "md-editor-rt";
+import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
+import { MdEditor, NormalToolbar, config, type ExposeParam, type Insert, type ToolbarNames } from "md-editor-rt";
 import { Prec } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import type { Completion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
@@ -131,18 +132,44 @@ function AttachButton({ insert, onUpload }: { insert?: Insert; onUpload(file: Fi
   );
 }
 
-export default function MarkdownEditor({ value, onChange, onUpload }: {
+// What Editor asks of the open editor when switching back to the reading view.
+export interface EditorHandle {
+  topLine(): number; // the source line at the top of the editor
+}
+
+export default function MarkdownEditor({ value, onChange, onUpload, line, ref }: {
   value: string;
   onChange(v: string): void;
   onUpload(file: File): Promise<string>; // resolves to the path to embed, e.g. "assets/x.png"
+  line: number; // source line to open at, with the cursor at its start (0: the top)
+  ref?: Ref<EditorHandle>;
 }) {
   // Rich-text paste (Word/Feishu/web pages) becomes markdown; plain text and files
   // (screenshots) keep going to the editor's own handler.
   const wrapRef = useRef<HTMLDivElement>(null);
   useEffect(() => (wrapRef.current ? onHtmlPaste(wrapRef.current) : undefined), []);
+
+  const md = useRef<ExposeParam>(null);
+  useImperativeHandle(ref, () => ({
+    topLine() {
+      const view = md.current?.getEditorView();
+      if (!view) return 0;
+      const top = view.lineBlockAtHeight(view.scrollDOM.getBoundingClientRect().top - view.documentTop);
+      return view.state.doc.lineAt(top.from).number;
+    },
+  }), []);
+  // Only where it opens: md-editor-rt creates its view in an effect of its own, which runs first.
+  useEffect(() => {
+    const view = md.current?.getEditorView();
+    if (!view || line < 2) return;
+    const at = view.state.doc.line(Math.min(line, view.state.doc.lines)).from;
+    view.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: "start" }) });
+  }, []);
+
   return (
     <div ref={wrapRef} className="h-full min-h-0">
     <MdEditor
+      ref={md}
       className="gitwiki-md"
       value={value}
       onChange={onChange}

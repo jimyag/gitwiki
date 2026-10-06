@@ -10,6 +10,9 @@ export function Toc({ headings, scrollRoot }: { headings: Heading[]; scrollRoot:
   // Set while a TOC click scrolls: the clicked entry stays active even if it is too close to
   // the end of the page to reach the top.
   const pinned = useRef<string | null>(null);
+  // The address this TOC last wrote. Its own hash only says where the reader already is: when the
+  // headings change (math loaded, back from the editor) that is no section to jump to.
+  const wrote = useRef<string | null>(null);
 
   useEffect(() => {
     const root = scrollRoot.current;
@@ -21,6 +24,7 @@ export function Toc({ headings, scrollRoot }: { headings: Heading[]; scrollRoot:
       last = id;
       setActive(id);
       setHash(id);
+      wrote.current = location.href;
     };
     const update = () => {
       frame = 0;
@@ -38,7 +42,7 @@ export function Toc({ headings, scrollRoot }: { headings: Heading[]; scrollRoot:
 
     // Opened through a link to a section: start there.
     const target = currentHash();
-    if (target) document.getElementById(target)?.scrollIntoView({ block: "start" });
+    if (target && location.href !== wrote.current) document.getElementById(target)?.scrollIntoView({ block: "start" });
     update();
 
     root.addEventListener("scroll", onScroll, { passive: true });

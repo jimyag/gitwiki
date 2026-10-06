@@ -12,10 +12,17 @@ import (
 
 // Session cookie: base64url(payload).base64url(hmac(payload))
 // payload = json{login,name,email,token,exp}
-// No server-side state. Skeleton-grade; rotate by restarting.
+// No server-side state. Rotate session_secret to invalidate existing cookies.
 
-const cookieName = "gitwiki_session"
-const cookieTTL = 7 * 24 * time.Hour
+const (
+	cookieName = "gitwiki_session"
+	cookieTTL  = 7 * 24 * time.Hour
+)
+
+func ClearSession(w http.ResponseWriter) {
+	// #nosec G124 -- This only deletes a cookie and must also work over local HTTP.
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+}
 
 type payload struct {
 	Login string `json:"l"`

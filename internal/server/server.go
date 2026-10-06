@@ -113,7 +113,9 @@ func (s *Server) spa(w http.ResponseWriter, r *http.Request) {
 			rc := s.cfg.FindRepo(parts[0])
 			u := s.auth.CurrentUser(r)
 			if u != nil {
-				if !s.authorize(w, r2, u, rc, false) {
+				var ok bool
+				u, ok = s.authorize(w, r2, u, rc, false)
+				if !ok {
 					return
 				}
 			} else if !rc.ReadPublic {
@@ -159,7 +161,7 @@ func (s *Server) spa(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{Name: "gitwiki_session", Path: "/", MaxAge: -1, HttpOnly: true})
+	auth.ClearSession(w)
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
@@ -169,11 +171,17 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"user": nil})
 		return
 	}
+	repos, err := s.writeRepos(r.Context(), u)
+	if errors.Is(err, auth.ErrUnauthorized) {
+		auth.ClearSession(w)
+		writeJSON(w, map[string]any{"user": nil})
+		return
+	}
 	// Repos ride along so the client needs one round trip instead of two before the tree:
 	// the ones this user may change. Reading follows repo slugs in URLs instead.
 	writeJSON(w, map[string]any{
 		"user":  map[string]string{"login": u.Login, "name": u.Name, "email": u.Email},
-		"repos": s.writeRepos(r.Context(), u),
+		"repos": repos,
 	})
 }
 
@@ -188,10 +196,13 @@ type repoView struct {
 // writeRepos lists the repos shown in the sidebar's selector. A repo shows up when the
 // user can push to it, or when it's read_public: the selector doubles as navigation to
 // readable repos, not only as a "what may I change" list. can_write tells the UI which.
-func (s *Server) writeRepos(ctx context.Context, u *auth.User) []repoView {
+func (s *Server) writeRepos(ctx context.Context, u *auth.User) ([]repoView, error) {
 	out := make([]repoView, 0, len(s.cfg.Repos))
 	for _, rc := range s.cfg.Repos {
 		a, err := s.auth.Access(ctx, u, rc.Github)
+		if errors.Is(err, auth.ErrUnauthorized) {
+			return nil, err
+		}
 		if err != nil {
 			log.Printf("access %s: %v", rc.Github, err)
 			continue
@@ -200,25 +211,33 @@ func (s *Server) writeRepos(ctx context.Context, u *auth.User) []repoView {
 			out = append(out, repoView{Slug: rc.Slug, Title: rc.Title, CanWrite: a.Write, SiteURL: rc.SiteURL, Source: rc.Source})
 		}
 	}
-	return out
+	return out, nil
 }
 
 // authorize answers whether this user may make this call. On a read_public repo GitHub-read
 // failures degrade to "may read, may not write": a stale token must not lock out readers.
-func (s *Server) authorize(w http.ResponseWriter, r *http.Request, u *auth.User, rc *config.Repo, write bool) bool {
+func (s *Server) authorize(w http.ResponseWriter, r *http.Request, u *auth.User, rc *config.Repo, write bool) (*auth.User, bool) {
 	a, err := s.auth.Access(r.Context(), u, rc.Github)
+	if errors.Is(err, auth.ErrUnauthorized) {
+		auth.ClearSession(w)
+		if !write && rc.ReadPublic {
+			return nil, true // Public reads continue anonymously, without the rejected token.
+		}
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return nil, false
+	}
 	if err != nil {
 		http.Error(w, "permission check failed: "+err.Error(), http.StatusBadGateway)
-		return false
+		return nil, false
 	}
 	if !write && rc.ReadPublic && !a.Read {
-		return true // read_public allows falling back to anonymous read; write still needs push
+		return u, true // read_public allows reading; write still needs push
 	}
 	if !a.Read || write && !a.Write {
 		http.Error(w, "forbidden", http.StatusForbidden)
-		return false
+		return nil, false
 	}
-	return true
+	return u, true
 }
 
 // call is one request against the {slug} repo by a user who may make it.
@@ -249,8 +268,12 @@ func (s *Server) withRepo(write bool, h repoHandler) http.HandlerFunc {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-		} else if !s.authorize(w, r, u, rc, write) {
-			return
+		} else {
+			var ok bool
+			u, ok = s.authorize(w, r, u, rc, write)
+			if !ok {
+				return
+			}
 		}
 		rr := s.git.Get(slug)
 		if rr == nil {
@@ -294,7 +317,12 @@ func (s *Server) presence(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "repo not found", http.StatusNotFound)
 		return
 	}
-	if !s.authorize(w, r, u, rc, false) {
+	u, ok := s.authorize(w, r, u, rc, false)
+	if !ok {
+		return
+	}
+	if u == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	s.present.ServeHTTP(w, r)

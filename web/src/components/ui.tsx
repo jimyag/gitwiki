@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 // Shared class names so the TopBar and the page actions Editor portals into it look like one bar.
@@ -62,13 +62,18 @@ export function colorForUser(login: string): string {
 }
 
 export function Avatar({ login, name, className = "size-6 text-[10px]" }: { login: string; name?: string; className?: string }) {
+  const src = `https://github.com/${encodeURIComponent(login)}.png?size=64`;
+  const [failedSrc, setFailedSrc] = useState<string>();
   return (
     <span
-      className={`inline-flex shrink-0 items-center justify-center rounded-full font-semibold text-white ${className}`}
+      className={`relative inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full font-semibold text-white ${className}`}
       style={{ background: colorForUser(login) }}
       title={name || login}
     >
       {login.slice(0, 1).toUpperCase()}
+      {src !== failedSrc && (
+        <img src={src} alt={`${name || login} 的头像`} className="absolute inset-0 size-full object-cover" referrerPolicy="no-referrer" onError={() => setFailedSrc(src)} />
+      )}
     </span>
   );
 }

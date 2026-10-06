@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -26,7 +27,9 @@ func TestAccess(t *testing.T) {
 		}
 	}))
 	defer gh.Close()
+	oldAPI := githubAPI
 	githubAPI = gh.URL
+	t.Cleanup(func() { githubAPI = oldAPI })
 
 	s := NewStore(&config.Config{})
 	u := &User{Login: "u", Token: "t"}
@@ -46,6 +49,62 @@ func TestAccess(t *testing.T) {
 	before := calls
 	if _, err := s.Access(t.Context(), u, "o/member"); err != nil || calls != before {
 		t.Errorf("cached answer should not call GitHub (calls %d → %d)", before, calls)
+	}
+}
+
+func TestAccessInvalidTokenNotCached(t *testing.T) {
+	calls := 0
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer gh.Close()
+	oldAPI := githubAPI
+	githubAPI = gh.URL
+	t.Cleanup(func() { githubAPI = oldAPI })
+	s := NewStore(&config.Config{})
+	u := &User{Login: "u", Token: "revoked"}
+	for range 2 {
+		if _, err := s.Access(t.Context(), u, "o/repo"); !errors.Is(err, ErrUnauthorized) {
+			t.Error("an invalid token must be a login error, not a cached permission denial")
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("invalid token was cached: got %d requests, want 2", calls)
+	}
+	u.Token = ""
+	if _, err := s.Access(t.Context(), u, "o/repo"); !errors.Is(err, ErrUnauthorized) || calls != 2 {
+		t.Fatalf("empty token must require login without calling GitHub: %v, %d requests", err, calls)
+	}
+}
+
+func TestAccessNewToken(t *testing.T) {
+	calls := 0
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Header.Get("Authorization") == "Bearer fresh" {
+			_, _ = w.Write([]byte(`{"permissions":{"pull":true,"push":true}}`))
+		} else {
+			_, _ = w.Write([]byte(`{"permissions":{"pull":true,"push":false}}`))
+		}
+	}))
+	defer gh.Close()
+	oldAPI := githubAPI
+	githubAPI = gh.URL
+	t.Cleanup(func() { githubAPI = oldAPI })
+	s := NewStore(&config.Config{})
+	u := &User{Login: "u", Token: "old"}
+	if a, err := s.Access(t.Context(), u, "o/repo"); err != nil || !a.Read || a.Write {
+		t.Fatalf("old token: got %+v, %v; want read-only", a, err)
+	}
+	u.Token = "fresh"
+	for range 2 {
+		if a, err := s.Access(t.Context(), u, "o/repo"); err != nil || !a.Write {
+			t.Errorf("new token reused the old denial: got %+v, %v", a, err)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("got %d requests, want one per token", calls)
 	}
 }
 

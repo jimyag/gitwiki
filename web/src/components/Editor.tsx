@@ -1,9 +1,9 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useCanWrite, useRepoInfo, useStore } from "../store";
 import { api, isNotFound, type ConflictResult, type Meta, type PageContent, type PageRef, type Revision, type RevisionContent } from "../lib/api";
 import { pagePath } from "../lib/tree";
-import { HOME, pathFor } from "../lib/route";
+import { HOME, pathFor, setHash } from "../lib/route";
 import { clearDraft, loadDraft, saveDraft, type Draft } from "../lib/draft";
 import { formatRelativeTime } from "../lib/format";
 import { pushRecent } from "../lib/recents";
@@ -12,6 +12,7 @@ import { connectPresence, disconnectPresence } from "../lib/ws";
 import { toast } from "sonner";
 import { Eye, Link2, Pencil, Save } from "lucide-react";
 import { DiffView } from "./editor/DiffView";
+import type { EditorHandle } from "./editor/MarkdownEditor";
 import { AssetsPanel } from "./AssetsPanel";
 import { HistoryPanel } from "./HistoryPanel";
 import { PropertiesBar } from "./PropertiesBar";
@@ -39,6 +40,16 @@ const titleClass = "w-full text-[30px] sm:text-[32px] font-semibold tracking-tig
 // md-editor-rt + CodeMirror is several hundred KB: only fetched when someone starts editing.
 const MarkdownEditor = lazy(() => import("./editor/MarkdownEditor"));
 
+// readingLine is the source line of the first block showing at the top of the reading view
+// (Preview tags blocks with data-line), or of the last block when scrolled past them all.
+function readingLine(root: HTMLElement | null): number {
+  if (!root) return 0;
+  const top = root.getBoundingClientRect().top;
+  const blocks = [...root.querySelectorAll<HTMLElement>("[data-line]")];
+  const block = blocks.find(b => b.getBoundingClientRect().bottom > top) ?? blocks.at(-1);
+  return Number(block?.dataset.line ?? 0);
+}
+
 export function Editor() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [headings, setHeadings] = useState<Heading[]>([]);
@@ -58,6 +69,10 @@ export function Editor() {
   const fallbackTitle = isHome ? repoInfo?.title ?? "首页" : "未命名页面";
 
   const [mode, setMode] = useState<Mode>("view");
+  // The source line at the top of the screen when switching between reading and editing, so
+  // the other view opens at the same block.
+  const [line, setLine] = useState(0);
+  const editorRef = useRef<EditorHandle>(null);
   const [conflict, setConflict] = useState<ConflictResult | null>(null);
   const [loaded, setLoaded] = useState<LoadedPage | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null); // "notfound" or a message
@@ -86,6 +101,7 @@ export function Editor() {
     if (!currentRepo || !pageId) return;
     let cancelled = false;
     setMode("view"); // opening a page → default to preview
+    setLine(0);
     (async () => {
       try {
         const pc = await api.readPage(currentRepo, pageId);
@@ -124,6 +140,27 @@ export function Editor() {
     sendEditing(mode === "edit");
     return () => sendEditing(false);
   }, [mode, currentRepo, pageId]);
+
+  // Switching views keeps the place: the editor opens at the block at the top of the reading
+  // view, and the reading view comes back at the block at the top of the editor.
+  function startEditing() {
+    setLine(readingLine(scrollRef.current));
+    setMode("edit");
+  }
+
+  function stopEditing() {
+    setLine(editorRef.current?.topLine() ?? 0);
+    setMode("view");
+  }
+
+  useLayoutEffect(() => {
+    const root = scrollRef.current;
+    if (mode !== "view" || !line || !root) return;
+    const block = [...root.querySelectorAll<HTMLElement>("[data-line]")].filter(b => Number(b.dataset.line) <= line).at(-1);
+    if (!block) return;
+    setHash(null); // the table of contents would jump back to the section read before editing
+    block.scrollIntoView({ block: "start" });
+  }, [mode]);
 
   function applyLoaded(pc: PageContent) {
     setLoaded({
@@ -170,7 +207,7 @@ export function Editor() {
     if (stored.baseSha) bumpBaseSha(stored.baseSha);
     markDirty(true);
     setStored(null);
-    setMode("edit");
+    startEditing();
   }
 
   function discardDraft() {
@@ -241,7 +278,7 @@ export function Editor() {
       setTimeout(() => setSaveStatus("idle"), 1500);
       setMissingHome(false);
       applyLoaded(await api.readPage(currentRepo, pageId));
-      setMode("view");
+      stopEditing();
       return true;
     } catch (e: any) {
       setSaveStatus("error");
@@ -288,7 +325,7 @@ export function Editor() {
       {actionsSlot && !conflict && createPortal(
         editing ? (
           <>
-            <button onClick={() => setMode("view")} title="预览，未保存的修改会保留" className={btnGhost}>
+            <button onClick={stopEditing} title="预览，未保存的修改会保留" className={btnGhost}>
               <Eye className="size-4" /><span className="hidden sm:inline">预览</span>
             </button>
             <button onClick={() => void doSave()} disabled={saveStatus === "saving"} title="保存 (⌘S)" className={btnPrimary}>
@@ -300,7 +337,7 @@ export function Editor() {
             onClick={() => {
               if (othersEditing.length > 0 &&
                   !confirm(othersEditing.map(p => p.name || p.user).join("、") + " 正在编辑这一页。现在打开编辑器，你们的修改保存时会自动合并，改到同一处时需要人工挑。继续？")) return;
-              setMode("edit");
+              startEditing();
             }}
             disabled={loaded === null}
             className={btnOutline}
@@ -342,9 +379,10 @@ export function Editor() {
       )}
 
       {editing && loaded ? (
-        // Editing gets the whole content area: the title, the page's properties, then the editor
-        // filling the rest of the height (it scrolls inside, so its toolbar stays put). Stays
-        // mounted (hidden) under the conflict view so the editor keeps its undo history.
+        // Editing gets the content area's whole height, in a column about as wide as the reading
+        // view: the title, the page's properties, then the editor filling the rest of the height
+        // (it scrolls inside, so its toolbar stays put). Stays mounted (hidden) under the
+        // conflict view so the editor keeps its undo history.
         <div className={conflict ? "hidden" : "flex-1 min-h-0 flex flex-col gap-2 sm:gap-2.5 px-2 sm:px-6 pt-3 sm:pt-4 pb-2 sm:pb-4"}>
           <input
             value={titleInput}
@@ -353,12 +391,14 @@ export function Editor() {
               markDirty(true);
             }}
             placeholder={fallbackTitle}
-            className="w-full max-w-[1600px] mx-auto px-1 text-[22px] sm:text-2xl font-semibold tracking-tight text-stone-900 bg-transparent outline-none placeholder:text-stone-300"
+            className="w-full max-w-3xl mx-auto px-1 text-[22px] sm:text-2xl font-semibold tracking-tight text-stone-900 bg-transparent outline-none placeholder:text-stone-300"
           />
           <PropertiesBar meta={meta} onChange={(m) => { setMeta(m); markDirty(true); }} />
-          <div className="flex-1 min-h-0 w-full max-w-[1600px] mx-auto">
+          <div className="flex-1 min-h-0 w-full max-w-3xl mx-auto">
             <Suspense fallback={<div className="gitwiki-md rounded-lg border border-stone-200 bg-stone-50 animate-pulse" />}>
               <MarkdownEditor
+                ref={editorRef}
+                line={line}
                 value={draft ?? loaded.body}
                 onChange={(v) => { setDraft(v); markDirty(true); }}
                 onUpload={uploadAsset}

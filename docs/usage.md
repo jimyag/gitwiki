@@ -151,6 +151,8 @@ sudo chmod 640 /etc/gitwiki/config.yaml
 
 配置和工作副本都按凭据文件保护：会话 cookie 含有签名但未加密的 GitHub token，克隆和推送还会将 token 写入工作副本的 Git remote URL。不要公开 `.git/config`，也不要把 `git remote -v` 的原始输出发到日志或问题单。保持 `session_secret` 稳定；重启本身不会使现有 cookie 失效，更换 secret 才会使已有会话失效。
 
+登录 cookie 有效期为 7 天，仓库权限按账号、仓库和凭据缓存 5 分钟。新登录凭据会立即重新检查权限。如果 GitHub 返回 401，gitwiki 会清除本地登录 cookie：刷新根路径后显示登录页，私有 Wiki 的读取及写入接口返回 401，公开 Wiki 仍可匿名阅读。重新登录可恢复有效凭据，不会继续使用旧凭据的拒绝结果。
+
 ## 验证本机启动
 
 在服务器前台运行服务：

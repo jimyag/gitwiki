@@ -17,6 +17,7 @@ export class ApiError extends Error {
 }
 
 function friendly(status: number, detail: string): string {
+  if (status === 401) return "请重新登录后再试";
   if (status === 403) return "没有权限做这个操作";
   if (status === 404) return "页面不存在，可能已被删除或移动";
   if (status === 409) return /\p{Script=Han}/u.test(detail) ? detail : "和别人的修改冲突了，请刷新后再试";

@@ -3,8 +3,10 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -26,7 +28,7 @@ type Store struct {
 	cfg *config.Config
 
 	permMu sync.Mutex
-	perms  map[string]permEntry // login + "\x00" + github repo
+	perms  map[string]permEntry // login, GitHub repo and token digest
 }
 
 // Access is what a user may do with a repo: Read (GitHub "pull") lets them browse the wiki,
@@ -41,6 +43,8 @@ type permEntry struct {
 // permTTL is how long a permission answer is reused: every repo request checks it, and a
 // revoked collaborator keeps access for at most this long.
 const permTTL = 5 * time.Minute
+
+var ErrUnauthorized = errors.New("github login expired; sign in again")
 
 // githubAPI is a variable so tests can point it at a fake.
 var githubAPI = "https://api.github.com"
@@ -120,7 +124,11 @@ func (s *Store) CurrentUser(r *http.Request) *User {
 // Access reports what the user's token may do with repo "owner/name".
 // Answers are cached per user and repo for permTTL; errors are not cached.
 func (s *Store) Access(ctx context.Context, u *User, githubRepo string) (Access, error) {
-	key := u.Login + "\x00" + githubRepo
+	if u.Token == "" {
+		return Access{}, ErrUnauthorized
+	}
+	// A new login must not reuse an older token's permissions. Keep raw tokens out of cache keys.
+	key := fmt.Sprintf("%s\x00%s\x00%x", u.Login, githubRepo, sha256.Sum256([]byte(u.Token)))
 	s.permMu.Lock()
 	e, ok := s.perms[key]
 	s.permMu.Unlock()
@@ -148,7 +156,9 @@ func fetchAccess(ctx context.Context, token, githubRepo string) (Access, error) 
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusOK:
-	case http.StatusUnauthorized, http.StatusNotFound: // bad token, or repo invisible to it
+	case http.StatusUnauthorized:
+		return Access{}, ErrUnauthorized
+	case http.StatusNotFound: // repo invisible to this token
 		return Access{}, nil
 	default: // e.g. rate limited: an error, so a GitHub hiccup is not cached as "no access"
 		return Access{}, fmt.Errorf("github repo %s: %s", githubRepo, resp.Status)

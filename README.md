@@ -140,7 +140,7 @@ git push origin v0.2.0
 
 给开发和运维参考，使用者可以跳过。
 
-- 登录：GitHub OAuth，scope `repo user:email`；读写权限取自仓库的 pull / push，结果缓存 5 分钟
+- 登录：GitHub OAuth，scope `repo user:email`；读写权限取自仓库的 pull / push，按账号、仓库和凭据缓存 5 分钟。新登录凭据立即重新检查权限；GitHub 返回 401 时清除登录 cookie，提示重新登录。cookie 有效期为 7 天，使用必填的 `session_secret` 签名
 - 页面：`content/foo.md`（leaf）与 `content/foo/_index.md`（bundle）。有子页面或附件时自动从 leaf 转成 bundle；首页是 `content/_index.md`。页面 id 即相对 `content/` 的路径，URL 形如 `/<仓库>/<页面 id>`
 - 属性栏改的是 front matter 的 `tags`、`draft`、`date`、`description`，其他字段原样保留
 - 附件：存到页面的 `assets/` 目录，文件名转小写并带内容哈希；界面显示去掉哈希的名字
