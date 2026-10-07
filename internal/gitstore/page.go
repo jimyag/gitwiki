@@ -27,16 +27,18 @@ import (
 // Page abstracts a Hugo content page. Two physical forms:
 //   - leaf:   content/<id>.md
 //   - bundle: content/<id>/_index.md, can have children and page-attached assets
+//
 // Page operations automatically migrate between forms.
 type Page struct {
-	ID       string   `json:"id"`       // e.g. "guide/install" - slash-separated, no extension
-	Title    string   `json:"title"`    // from front matter, fallback to last segment
-	Weight   int      `json:"weight"`   // 0 means unset
-	IsDir    bool     `json:"is_dir"`   // bundle form (or virtual: has children)
-	HasBody  bool     `json:"has_body"` // has backing markdown file
-	Tags     []string `json:"tags,omitempty"`
-	Draft    bool     `json:"draft,omitzero"`
-	Children []*Page  `json:"children,omitempty"`
+	ID         string   `json:"id"`       // e.g. "guide/install" - slash-separated, no extension
+	Title      string   `json:"title"`    // from front matter, fallback to last segment
+	Weight     int      `json:"weight"`   // 0 means unset
+	IsDir      bool     `json:"is_dir"`   // bundle form (or virtual: has children)
+	HasBody    bool     `json:"has_body"` // has backing markdown file
+	Tags       []string `json:"tags,omitempty"`
+	Draft      bool     `json:"draft,omitzero"`
+	Deprecated bool     `json:"deprecated,omitzero"`
+	Children   []*Page  `json:"children,omitempty"`
 }
 
 var (
@@ -52,6 +54,8 @@ type Meta struct {
 	Draft       bool     `json:"draft"`
 	Description string   `json:"description"`
 	Date        string   `json:"date"`
+	Deprecated  bool     `json:"deprecated"`
+	ReplacedBy  string   `json:"replaced_by"`
 }
 
 // MetaOf reads Meta from parsed front matter.
@@ -72,6 +76,8 @@ func MetaOf(fm map[string]any) Meta {
 	m.Draft, _ = fm["draft"].(bool)
 	m.Description, _ = fm["description"].(string)
 	m.Date, _ = fm["date"].(string)
+	m.Deprecated, _ = fm["deprecated"].(bool)
+	m.ReplacedBy, _ = fm["replaced_by"].(string)
 	return m
 }
 
@@ -92,17 +98,27 @@ func (m Meta) Apply(fm map[string]any) {
 	set("draft", cur.Draft != m.Draft, !m.Draft, true)
 	set("description", cur.Description != m.Description, m.Description == "", m.Description)
 	set("date", cur.Date != m.Date, m.Date == "", m.Date)
+	set("deprecated", cur.Deprecated != m.Deprecated, !m.Deprecated, true)
+	if !m.Deprecated {
+		m.ReplacedBy = ""
+	}
+	set("replaced_by", cur.ReplacedBy != m.ReplacedBy, m.ReplacedBy == "", m.ReplacedBy)
 }
 
 // commitAs commits what is staged with u as author and committer.
-func (r *Repo) commitAs(ctx context.Context, u *auth.User, message string) error {
+func (r *Repo) commitAs(ctx context.Context, u *auth.User, message string, paths ...string) error {
 	name := cmp.Or(u.Name, u.Login)
 	email := cmp.Or(u.Email, u.Login+"@users.noreply.github.com")
 	env := []string{
 		"GIT_AUTHOR_NAME=" + name, "GIT_AUTHOR_EMAIL=" + email,
 		"GIT_COMMITTER_NAME=" + name, "GIT_COMMITTER_EMAIL=" + email,
 	}
-	return r.gitEnv(ctx, env, "commit", "-q", "-m", message)
+	args := []string{"commit", "-q", "-m", message}
+	if len(paths) > 0 {
+		args = append(args, "--only", "--")
+		args = append(args, paths...)
+	}
+	return r.gitEnv(ctx, env, args...)
 }
 
 // gitPath turns a path relative to the content dir into one relative to the repo root.
@@ -238,9 +254,15 @@ func sortTree(p *Page) {
 	sort.SliceStable(p.Children, func(i, j int) bool {
 		a, b := p.Children[i], p.Children[j]
 		aw, bw := a.Weight, b.Weight
-		if aw == 0 { aw = 1 << 30 }
-		if bw == 0 { bw = 1 << 30 }
-		if aw != bw { return aw < bw }
+		if aw == 0 {
+			aw = 1 << 30
+		}
+		if bw == 0 {
+			bw = 1 << 30
+		}
+		if aw != bw {
+			return aw < bw
+		}
 		return a.ID < b.ID
 	})
 	for _, c := range p.Children {
@@ -353,8 +375,12 @@ func (r *Repo) SavePage(ctx context.Context, id string, doc *PageDoc, baseSHA, m
 			baseDoc, _ := r.readDocAt(ctx, relToMd(id, isBundle), baseSHA)
 			headDoc, _ := r.readDocAt(ctx, relToMd(id, isBundle), localHead)
 			var baseBody, theirsBody string
-			if baseDoc != nil { baseBody = baseDoc.Body }
-			if headDoc != nil { theirsBody = headDoc.Body }
+			if baseDoc != nil {
+				baseBody = baseDoc.Body
+			}
+			if headDoc != nil {
+				theirsBody = headDoc.Body
+			}
 			return "", &ConflictError{
 				Path: id, Merged: merged, CurrentSHA: localHead,
 				TheirsBody: theirsBody, OursBody: doc.Body, BaseBody: baseBody,
@@ -363,6 +389,15 @@ func (r *Repo) SavePage(ctx context.Context, id string, doc *PageDoc, baseSHA, m
 		contentBytes = []byte(merged)
 	}
 
+	mergedDoc, _ := ParsePage(contentBytes)
+	if target := MetaOf(mergedDoc.FrontMatter).ReplacedBy; target != "" {
+		if target == id {
+			return "", fmt.Errorf("%w: replacement cannot be the page itself", ErrBadPath)
+		}
+		if _, _, err := r.diskPath(target); err != nil {
+			return "", fmt.Errorf("%w: replacement page does not exist", ErrBadPath)
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return "", err
 	}
@@ -388,17 +423,31 @@ func (r *Repo) SavePage(ctx context.Context, id string, doc *PageDoc, baseSHA, m
 	return sha, nil
 }
 
-// CreatePage creates an empty page with front matter. If parentID != "", page is nested.
+// CreatePage creates a page with optional template content. If parentID != "", page is nested.
 // Slug is generated server-side; users only see and edit titles. Rapid duplicate calls
-// with the same (parentID, title) within 30s return the prior id — guards double-clicks.
-func (r *Repo) CreatePage(ctx context.Context, parentID, title string, u *auth.User) (string, error) {
+// with the same (parentID, title, templateID) within 30s return the prior id — guards double-clicks.
+func (r *Repo) CreatePage(ctx context.Context, parentID, title, templateID string, u *auth.User) (string, error) {
 	if title == "" {
 		return "", ErrBadPath
 	}
 	if parentID == HomeID { // the home page's children are the top-level pages
 		parentID = ""
 	}
-	dedupKey := parentID + "|" + title
+	doc := &PageDoc{FrontMatter: map[string]any{"title": title}}
+	if templateID != "" {
+		templates, err := r.Templates(ctx)
+		if err != nil {
+			return "", err
+		}
+		i := slices.IndexFunc(templates, func(t PageTemplate) bool { return t.ID == templateID })
+		if i < 0 {
+			return "", ErrBadPath
+		}
+		doc.Body = templates[i].Body
+		m := templates[i].meta
+		m.Apply(doc.FrontMatter)
+	}
+	dedupKey := parentID + "|" + title + "|" + templateID
 	r.recentCreateMu.Lock()
 	if r.recentCreate == nil {
 		r.recentCreate = map[string]recentCreate{}
@@ -439,10 +488,6 @@ func (r *Repo) CreatePage(ctx context.Context, parentID, title string, u *auth.U
 		if err != nil {
 			return "", err
 		}
-	}
-	doc := &PageDoc{
-		FrontMatter: map[string]any{"title": title},
-		Body:        "",
 	}
 	if _, err := r.SavePage(ctx, id, doc, "", "wiki: new page "+title, u); err != nil {
 		return "", err
@@ -627,6 +672,7 @@ func extBySniff(r io.Reader) string {
 	}
 	return ".bin"
 }
+
 // DeletePage removes page id together with its children and attachments, in one commit.
 // Git keeps the files: RecentChanges lists the deletion and RestorePage undoes it.
 func (r *Repo) DeletePage(ctx context.Context, id string, u *auth.User) error {
@@ -653,11 +699,19 @@ func (r *Repo) DeletePage(ctx context.Context, id string, u *auth.User) error {
 // page for the top level). The page keeps its slug; links to it and to its children are
 // rewritten in the same commit. It returns the new id and how many pages had links rewritten.
 func (r *Repo) MovePage(ctx context.Context, id, newParent string, u *auth.User) (string, int, error) {
+	if _, err := r.resolvePath(id); err != nil {
+		return "", 0, err
+	}
 	if newParent == HomeID {
 		newParent = ""
 	}
 	if id == HomeID || newParent == id || strings.HasPrefix(newParent, id+"/") {
 		return "", 0, ErrBadPath
+	}
+	if newParent != "" {
+		if _, err := r.resolvePath(newParent); err != nil {
+			return "", 0, err
+		}
 	}
 	newID := path.Join(newParent, path.Base(id))
 	if newID == id {
@@ -665,57 +719,7 @@ func (r *Repo) MovePage(ctx context.Context, id, newParent string, u *auth.User)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	abs, isBundle, err := r.diskPath(id)
-	if err != nil {
-		return "", 0, err
-	}
-	dst, err := r.resolvePath(newID)
-	if err != nil {
-		return "", 0, err
-	}
-	if _, err := os.Stat(dst + ".md"); err == nil {
-		return "", 0, ErrExists
-	}
-	if _, err := os.Stat(dst); err == nil {
-		return "", 0, ErrExists
-	}
-	if newParent != "" {
-		parentAbs, parentIsBundle, err := r.diskPath(newParent)
-		switch {
-		case errors.Is(err, ErrNotFound): // a folder without a page file can hold pages too
-			dir, _ := r.resolvePath(newParent)
-			if st, err := os.Stat(dir); err != nil || !st.IsDir() {
-				return "", 0, ErrNotFound
-			}
-		case err != nil:
-			return "", 0, err
-		case !parentIsBundle:
-			if err := r.promoteToBundle(ctx, newParent, parentAbs); err != nil {
-				return "", 0, err
-			}
-		}
-	}
-	from, to := abs, dst+".md"
-	oldGit, newGit := r.gitPath(id+".md"), r.gitPath(newID+".md")
-	if isBundle {
-		from, to = filepath.Dir(abs), dst
-		oldGit, newGit = r.gitPath(id), r.gitPath(newID)
-	}
-	if err := os.Rename(from, to); err != nil {
-		return "", 0, err
-	}
-	if err := r.git(ctx, "add", "-A", "--", oldGit, newGit); err != nil {
-		return "", 0, err
-	}
-	n, err := r.rewriteLinks(ctx, id, newID)
-	if err != nil {
-		return "", 0, err
-	}
-	if err := r.commitAs(ctx, u, fmt.Sprintf("wiki: move %s → %s", id, newID)); err != nil {
-		return "", 0, err
-	}
-	r.schedulePush(u.Token)
-	return newID, n, nil
+	return r.movePageLocked(ctx, id, newID, newParent, u)
 }
 
 type ConflictError struct {
@@ -812,17 +816,21 @@ func readPageInfo(absPath string, fallbackTitle string) *Page {
 		p.Tags = m.Tags
 	}
 	p.Draft = m.Draft
+	p.Deprecated = m.Deprecated
 	return p
 }
 
 func findByID(root *Page, id string) *Page {
-	if root.ID == id { return root }
+	if root.ID == id {
+		return root
+	}
 	for _, c := range root.Children {
-		if n := findByID(c, id); n != nil { return n }
+		if n := findByID(c, id); n != nil {
+			return n
+		}
 	}
 	return nil
 }
-
 
 // UpdateTitle changes the page title front matter without renaming the file.
 // The id stays the same, so links to the page keep working.
@@ -839,16 +847,19 @@ func (r *Repo) UpdateTitle(ctx context.Context, id, newTitle string, u *auth.Use
 	return r.SavePage(ctx, id, doc, pc.BaseSHA, "wiki: rename "+newTitle, u)
 }
 
-
 // ListAssets returns filenames under <page>/assets/.
 func (r *Repo) ListAssets(ctx context.Context, pageID string) ([]string, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	abs, err := r.resolvePath(assetsDir(pageID))
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	ents, err := os.ReadDir(abs)
 	if err != nil {
-		if os.IsNotExist(err) { return []string{}, nil }
+		if os.IsNotExist(err) {
+			return []string{}, nil
+		}
 		return nil, err
 	}
 	out := []string{}
@@ -868,5 +879,3 @@ func (r *Repo) AssetPath(pageID, name string) (string, error) {
 	}
 	return r.resolvePath(filepath.Join(assetsDir(pageID), name))
 }
-
-

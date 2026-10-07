@@ -3,22 +3,32 @@ package gitstore
 import (
 	"cmp"
 	"context"
+	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
 
 // SearchHit is one page matching a query.
 type SearchHit struct {
-	PageID  string   `json:"page_id"`
-	Title   string   `json:"title"`
-	Snippet string   `json:"snippet"` // body text around the first match; empty if only the title matched
-	Terms   []string `json:"terms"`   // the strings that matched, for highlighting
-	score   int
+	PageID     string   `json:"page_id"`
+	Title      string   `json:"title"`
+	Snippet    string   `json:"snippet"` // body text around the first match; empty if only the title matched
+	Terms      []string `json:"terms"`   // the strings that matched, for highlighting
+	Deprecated bool     `json:"deprecated,omitzero"`
+	score      int
 }
 
 const maxSearchHits = 50
+
+type SearchOptions struct {
+	Directory    string
+	Tag          string
+	Draft        *bool
+	UpdatedAfter time.Time
+}
 
 // Search finds the pages that contain every whitespace-separated term of q in their title,
 // path or body, ignoring case. Title matches rank first, then pages that mention the terms
@@ -26,19 +36,62 @@ const maxSearchHits = 50
 // instead, so "协作冲突" finds "协作与冲突".
 //
 // ponytail: reads every page per query; build an index when wikis reach thousands of pages.
-func (r *Repo) Search(ctx context.Context, q string) ([]SearchHit, error) {
+func (r *Repo) Search(ctx context.Context, q string, opts SearchOptions) ([]SearchHit, error) {
 	terms := strings.Fields(lower(q))
-	if len(terms) == 0 || len(q) > 256 {
+	if len(q) > 256 || len(opts.Tag) > 256 {
 		return nil, ErrBadPath
+	}
+	if opts.Directory != "" {
+		if _, err := r.resolvePath(opts.Directory); err != nil {
+			return nil, err
+		}
+	}
+	if len(terms) == 0 && opts == (SearchOptions{}) {
+		return []SearchHit{}, nil
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	updated := map[string]time.Time{}
+	if !opts.UpdatedAfter.IsZero() {
+		// One history walk for the filter, rather than one git process per page.
+		out, err := r.gitOut(ctx, "-c", "core.quotePath=false", "log", "--name-only", "--no-renames",
+			strings.Replace(logFormat, "%aI", "%cI", 1), "--", r.cfg.ContentDir)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range parseLog(out) {
+			at, err := time.Parse(time.RFC3339, entry.date)
+			if err != nil {
+				return nil, err
+			}
+			for _, file := range entry.files {
+				abs := filepath.Join(r.cfg.Workdir, filepath.FromSlash(file))
+				if _, seen := updated[abs]; !seen {
+					updated[abs] = at
+				}
+			}
+		}
+	}
 	hits := []SearchHit{}
-	err := r.walkPages(func(id, _ string, data []byte) error {
+	err := r.walkPages(func(id, abs string, data []byte) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if opts.Directory != "" && !within(id, opts.Directory) {
+			return nil
+		}
+		if !opts.UpdatedAfter.IsZero() && updated[abs].Before(opts.UpdatedAfter) {
+			return nil
+		}
 		doc, _ := ParsePage(data)
+		meta := MetaOf(doc.FrontMatter)
+		if opts.Tag != "" && !slices.Contains(meta.Tags, opts.Tag) || opts.Draft != nil && meta.Draft != *opts.Draft {
+			return nil
+		}
 		title := pageTitle(doc, id)
 		if h, ok := matchPage(terms, lower(title), lower(id), doc.Body); ok {
 			h.PageID, h.Title = id, title
+			h.Deprecated = meta.Deprecated
 			if lower(title) == lower(strings.TrimSpace(q)) {
 				h.score += 1000
 			}
@@ -58,6 +111,7 @@ func (r *Repo) Search(ctx context.Context, q string) ([]SearchHit, error) {
 // matchPage scores one page (title and id already lowercased); ok is false unless every term
 // matches somewhere. A whole-term match counts double a match of its split CJK words.
 func matchPage(terms []string, title, id, body string) (h SearchHit, ok bool) {
+	h.Terms = []string{}
 	lbody := lower(body)
 	for _, t := range terms {
 		if s := wordsScore([]string{t}, title, id, lbody); s > 0 {

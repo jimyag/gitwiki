@@ -1,11 +1,19 @@
 import { useState } from "react";
 import { CalendarDays, Tag, X } from "lucide-react";
 import type { Meta } from "../lib/api";
+import { useStore } from "../store";
+import { pagePath } from "../lib/tree";
+import { HOME } from "../lib/route";
+import { PagePicker } from "./PagePicker";
 
 // The page's Hugo front matter that the editor exposes: tags, draft, date and description.
 // Every other field in the file is kept as it is.
 export function PropertiesBar({ meta, onChange }: { meta: Meta; onChange(m: Meta): void }) {
   const [tag, setTag] = useState("");
+  const [picking, setPicking] = useState(false);
+  const pageId = useStore(s => s.currentPageId);
+  const tree = useStore(s => s.tree);
+  const replacement = meta.replaced_by === HOME ? "首页" : pagePath(tree, meta.replaced_by ?? null).at(-1)?.title;
 
   const addTag = () => {
     const t = tag.trim().replace(/^#/, "");
@@ -57,6 +65,15 @@ export function PropertiesBar({ meta, onChange }: { meta: Meta; onChange(m: Meta
           className="h-6 bg-transparent outline-none text-stone-600"
         />
       </label>
+      <label className="inline-flex items-center gap-1.5 cursor-pointer">
+        <input type="checkbox" checked={!!meta.deprecated} onChange={e => onChange({ ...meta, deprecated: e.target.checked, replaced_by: e.target.checked ? meta.replaced_by : "" })} className="accent-amber-600" />
+        已废弃
+      </label>
+      {meta.deprecated && <span className="inline-flex items-center gap-2">
+        <button onClick={() => setPicking(true)} className="underline text-amber-800">{meta.replaced_by ? `替代页面：${replacement ?? "页面不存在"}` : "选择替代页面（可选）"}</button>
+        {meta.replaced_by && <button title="移除替代页面" onClick={() => onChange({ ...meta, replaced_by: "" })}><X className="size-3.5" /></button>}
+      </span>}
+      {picking && <PagePicker title="选择替代页面" disabled={id => id === pageId} onClose={() => setPicking(false)} onPick={p => { onChange({ ...meta, replaced_by: p.id }); setPicking(false); }} />}
       <input
         value={meta.description}
         onChange={(e) => onChange({ ...meta, description: e.target.value })}

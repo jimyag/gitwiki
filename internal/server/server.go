@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jimyag/gitwiki/internal/auth"
 	"github.com/jimyag/gitwiki/internal/comments"
@@ -60,6 +61,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/repos/{slug}/recent", s.read(s.recentChanges))
 	s.mux.HandleFunc("GET /api/repos/{slug}/backlinks", s.read(s.backlinks))
 	s.mux.HandleFunc("GET /api/repos/{slug}/search", s.read(s.searchPages))
+	s.mux.HandleFunc("GET /api/repos/{slug}/health", s.read(s.documentHealth))
+	s.mux.HandleFunc("GET /api/repos/{slug}/templates", s.read(s.pageTemplates))
 	s.mux.HandleFunc("GET /api/repos/{slug}/assets", s.read(s.listAssets))
 	s.mux.HandleFunc("GET /api/repos/{slug}/asset", s.read(s.readAsset))
 	s.mux.HandleFunc("GET /api/repos/{slug}/comments", s.read(s.listComments))
@@ -314,7 +317,9 @@ func fail(w http.ResponseWriter, err error) {
 	case errors.Is(err, gitstore.ErrNotFound):
 		http.Error(w, "not found", http.StatusNotFound)
 	case errors.Is(err, gitstore.ErrExists):
-		http.Error(w, "目标位置已有同名页面", http.StatusConflict)
+		http.Error(w, "目标位置已有同名页面或评论记录", http.StatusConflict)
+	case errors.Is(err, gitstore.ErrConflict):
+		http.Error(w, err.Error(), http.StatusConflict)
 	case errors.Is(err, gitstore.ErrBadPath):
 		http.Error(w, "invalid path", http.StatusBadRequest)
 	default:
@@ -509,6 +514,7 @@ func (s *Server) savePage(w http.ResponseWriter, r *http.Request, c *call) {
 type createReq struct {
 	ParentID string `json:"parent_id"`
 	Title    string `json:"title"`
+	Template string `json:"template"`
 }
 
 func (s *Server) createPage(w http.ResponseWriter, r *http.Request, c *call) {
@@ -521,7 +527,7 @@ func (s *Server) createPage(w http.ResponseWriter, r *http.Request, c *call) {
 		http.Error(w, "title required", http.StatusBadRequest)
 		return
 	}
-	id, err := c.repo.CreatePage(r.Context(), req.ParentID, req.Title, c.user)
+	id, err := c.repo.CreatePage(r.Context(), req.ParentID, req.Title, req.Template, c.user)
 	if err != nil {
 		fail(w, err)
 		return
@@ -555,12 +561,12 @@ func (s *Server) movePage(w http.ResponseWriter, r *http.Request, c *call) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	newID, links, err := c.repo.MovePage(r.Context(), req.ID, req.ParentID, c.user)
+	newID, links, err := s.comments.MovePage(r.Context(), c.repo, req.ID, req.ParentID, c.user)
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	s.present.BroadcastChanged(c.slug, c.user.Login, req.ID, newID)
+	s.present.BroadcastMoved(c.slug, c.user.Login, req.ID, newID)
 	writeJSON(w, map[string]any{"id": newID, "links_updated": links})
 }
 
@@ -627,12 +633,25 @@ func (s *Server) reorderPages(w http.ResponseWriter, r *http.Request, c *call) {
 }
 
 func (s *Server) searchPages(w http.ResponseWriter, r *http.Request, c *call) {
-	q := r.URL.Query().Get("q")
-	if strings.TrimSpace(q) == "" {
-		writeJSON(w, []any{})
-		return
+	query := r.URL.Query()
+	opts := gitstore.SearchOptions{Directory: query.Get("directory"), Tag: query.Get("tag")}
+	if draft := query.Get("draft"); draft != "" {
+		if draft != "true" && draft != "false" {
+			http.Error(w, "draft must be true or false", http.StatusBadRequest)
+			return
+		}
+		value := draft == "true"
+		opts.Draft = &value
 	}
-	hits, err := c.repo.Search(r.Context(), q)
+	if after := query.Get("updated_after"); after != "" {
+		var err error
+		opts.UpdatedAfter, err = time.Parse(time.RFC3339, after)
+		if err != nil {
+			http.Error(w, "updated_after must be RFC3339", http.StatusBadRequest)
+			return
+		}
+	}
+	hits, err := c.repo.Search(r.Context(), query.Get("q"), opts)
 	if err != nil {
 		fail(w, err)
 		return
@@ -934,7 +953,7 @@ func (s *Server) copyPage(w http.ResponseWriter, r *http.Request, c *call) {
 	}
 	doc := &gitstore.PageDoc{FrontMatter: maps.Clone(f.RawMeta), Body: f.Body}
 	doc.FrontMatter["title"] = f.Title + "-副本"
-	id, err := c.repo.CreatePage(r.Context(), req.ParentID, doc.FrontMatter["title"].(string), c.user)
+	id, err := c.repo.CreatePage(r.Context(), req.ParentID, doc.FrontMatter["title"].(string), "", c.user)
 	if err != nil {
 		fail(w, err)
 		return
@@ -1008,7 +1027,7 @@ func (s *Server) importPage(w http.ResponseWriter, r *http.Request, c *call) {
 		return
 	}
 	doc.FrontMatter["title"] = title
-	id, err := c.repo.CreatePage(r.Context(), r.FormValue("parent_id"), title, c.user)
+	id, err := c.repo.CreatePage(r.Context(), r.FormValue("parent_id"), title, "", c.user)
 	if err != nil {
 		fail(w, err)
 		return

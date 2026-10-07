@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type ReactNode } from "react";
+import { lazy, Suspense, useState, useEffect, useRef, type ReactNode } from "react";
 import { useCanWrite, useRepoInfo, useStore } from "../store";
 import { api, loginUrl, type PageMeta, type PageRef, type SyncStatus } from "../lib/api";
 import { descendants, pagePath, parentOf } from "../lib/tree";
@@ -30,6 +30,8 @@ function findNode(tree: PageMeta | null, id: string | null, parentId = "", sibli
   };
   return visit(tree, parentId, siblings, 0);
 }
+
+const HealthNotice = lazy(() => import("./HealthNotice"));
 
 const chip = "inline-flex items-center gap-1.5 h-7 shrink-0 px-2.5 rounded-full border text-xs";
 const amberChip = `${chip} border-amber-200 bg-amber-50 text-amber-800`;
@@ -154,6 +156,8 @@ export function TopBar() {
         )}
         {isHome && <span className="truncate px-1 font-medium text-stone-900">首页</span>}
       </nav>
+
+      <Suspense fallback={null}><HealthNotice key={currentRepo} /></Suspense>
 
       {othersEditing.length > 0 && (
         <span title={othersEditing.map(p => p.name || p.user).join("、") + " 正在编辑这一页"} className={amberChip}>

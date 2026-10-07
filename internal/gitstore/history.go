@@ -85,8 +85,15 @@ func (r *Repo) history(ctx context.Context, id string) ([]Revision, error) {
 	if err != nil {
 		return nil, err
 	}
+	return r.historyFile(ctx, r.gitPath(relToMd(id, isBundle)), "HEAD", HistoryLimit)
+}
+
+func (r *Repo) historyFile(ctx context.Context, file, revision string, limit int) ([]Revision, error) {
+	if limit <= 0 {
+		return []Revision{}, nil
+	}
 	out, err := r.gitOut(ctx, "-c", "core.quotePath=false", "log", "--follow", "--name-status",
-		"-n", strconv.Itoa(HistoryLimit), logFormat, "--", r.gitPath(relToMd(id, isBundle)))
+		"-n", strconv.Itoa(limit), logFormat, revision, "--", file)
 	if err != nil {
 		return nil, err
 	}
@@ -109,6 +116,26 @@ func (r *Repo) history(ctx context.Context, id string) ([]Revision, error) {
 			}
 		}
 		revs = append(revs, rev)
+		if to, ok := movedTo(e.subject); ok && f[0] == "A" {
+			pid, _ := r.pageOfFile(rev.file)
+			if within(pid, to) {
+				// Git cannot detect a rename when link rewriting changes every line. The move
+				// commit records the exact old path, so history need not rely on similarity.
+				rest := strings.TrimPrefix(e.subject, "wiki: move ")
+				from, _, _ := strings.Cut(rest, " → ")
+				oldFile := r.gitPath(from) + strings.TrimPrefix(rev.file, r.gitPath(to))
+				parents, err := r.gitOut(ctx, "rev-list", "--parents", "-n", "1", e.sha)
+				if err != nil {
+					return revs, err
+				}
+				fields := strings.Fields(string(parents))
+				if len(fields) < 2 {
+					return revs, nil
+				} // root or shallow-clone boundary
+				older, err := r.historyFile(ctx, oldFile, fields[1], limit-len(revs))
+				return append(revs, older...), err
+			}
+		}
 	}
 	return revs, nil
 }

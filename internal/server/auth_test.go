@@ -82,7 +82,7 @@ func TestSyncRequiresWriteAccess(t *testing.T) {
 }
 
 func TestExpiredSession(t *testing.T) {
-	for _, path := range []string{"/api/me", "/api/repos/wiki/pages", "/wiki.md", "/ws?repo=wiki"} {
+	for _, path := range []string{"/api/me", "/api/repos/wiki/pages", "/api/repos/wiki/health", "/api/repos/wiki/templates", "/wiki.md", "/ws?repo=wiki"} {
 		t.Run(path, func(t *testing.T) {
 			cfg := &config.Config{SessionSecret: "test", Repos: []config.Repo{{Slug: "wiki", Github: "o/repo"}}}
 			as, cookie := expiredSession(t, cfg)

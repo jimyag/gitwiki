@@ -46,6 +46,8 @@ type outbound struct {
 	User  string   `json:"user,omitempty"`
 	Page  string   `json:"page,omitempty"`
 	Pages []string `json:"pages,omitempty"` // "changed": the pages that changed
+	From  string   `json:"from,omitempty"`  // "moved": the subtree's old and new paths
+	To    string   `json:"to,omitempty"`
 
 	// cursor broadcast
 	Anchor int    `json:"anchor,omitempty"` // absolute offset in doc
@@ -151,6 +153,11 @@ func (h *Hub) broadcast(room map[*client]bool, msg outbound, except *client) {
 // is stale. byUser is "" for commits pulled from GitHub.
 func (h *Hub) BroadcastChanged(repo, byUser string, pages ...string) {
 	h.broadcastRepo(repo, outbound{Type: "changed", User: byUser, Pages: pages})
+}
+
+// BroadcastMoved lets open editors follow the subtree and migrate local page records.
+func (h *Hub) BroadcastMoved(repo, user, from, to string) {
+	h.broadcastRepo(repo, outbound{Type: "moved", User: user, From: from, To: to})
 }
 
 // BroadcastSync tells everyone on any page of repo whether the last push to origin worked.

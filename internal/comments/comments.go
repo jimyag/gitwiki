@@ -3,10 +3,12 @@
 package comments
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -46,6 +48,7 @@ type Store struct {
 
 	// Pending comments per repo+page, newest last. Not persisted: they vanish on restart,
 	// which matches how the UI presents them as drafts until saved.
+	// ponytail: comment writes and moves share one lock; use per-repo locks if contention matters.
 	mu      sync.Mutex
 	pending map[string][]Comment
 }
@@ -56,13 +59,13 @@ func New(gm *gitstore.Manager) *Store {
 
 // List merges the stored comments with the pending ones (which are always newer).
 func (s *Store) List(repo *gitstore.Repo, pageID string) ([]Comment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	out, err := s.saved(repo, pageID)
 	if err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
 	out = append(out, s.pending[key(repo.Slug(), pageID)]...)
-	s.mu.Unlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].At < out[j].At })
 	return out, nil
 }
@@ -85,6 +88,11 @@ func (s *Store) saved(repo *gitstore.Repo, pageID string) ([]Comment, error) {
 // Add stores the comment. With save it goes to the repo as the user (and shows up in
 // page history); without it only lives in memory until its author saves the page.
 func (s *Store) Add(repo *gitstore.Repo, pageID, text string, save bool, anchor *TextAnchor, u *auth.User) (Comment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, _, err := repo.ReadPage(context.TODO(), pageID); err != nil {
+		return Comment{}, err
+	}
 	cm := Comment{
 		ID:     randID(),
 		By:     u.Login,
@@ -94,10 +102,8 @@ func (s *Store) Add(repo *gitstore.Repo, pageID, text string, save bool, anchor 
 		Anchor: anchor,
 	}
 	if !save {
-		s.mu.Lock()
 		k := key(repo.Slug(), pageID)
 		s.pending[k] = append(s.pending[k], cm)
-		s.mu.Unlock()
 		return cm, nil
 	}
 	existing, err := s.saved(repo, pageID)
@@ -114,6 +120,37 @@ func (s *Store) Add(repo *gitstore.Repo, pageID, text string, save bool, anchor 
 		return Comment{}, err
 	}
 	return cm, nil
+}
+
+// MovePage serializes comment writes with the durable move and carries pending comments
+// along too. A request arriving at the old page after the move must fail instead of orphaning it.
+func (s *Store) MovePage(ctx context.Context, repo *gitstore.Repo, id, parent string, u *auth.User) (string, int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if parent == gitstore.HomeID {
+		parent = ""
+	}
+	target := path.Join(parent, path.Base(id))
+	if target != id {
+		prefix := key(repo.Slug(), target)
+		for k := range s.pending {
+			if k == prefix || strings.HasPrefix(k, prefix+"/") {
+				return "", 0, fmt.Errorf("%w: pending comments at %s", gitstore.ErrExists, target)
+			}
+		}
+	}
+	to, n, err := repo.MovePage(ctx, id, parent, u)
+	if err != nil || to == id {
+		return to, n, err
+	}
+	prefix := key(repo.Slug(), id)
+	for k, pending := range s.pending {
+		if k == prefix || strings.HasPrefix(k, prefix+"/") {
+			delete(s.pending, k)
+			s.pending[key(repo.Slug(), to)+strings.TrimPrefix(k, prefix)] = pending
+		}
+	}
+	return to, n, nil
 }
 
 func commentPath(pageID string) string {

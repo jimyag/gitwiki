@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, type CSSProperties, type DragEvent } from "react";
 import { useCanWrite, useRepoInfo, useStore } from "../store";
-import { api, loginUrl, type PageMeta } from "../lib/api";
+import { api, loginUrl, type PageMeta, type PageTemplate } from "../lib/api";
 import { Folder, Plus, ChevronRight, ChevronsUpDown, LogOut, Search, Home, Tag, FileUp, Trash2, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { HOME } from "../lib/route";
@@ -337,13 +337,24 @@ export function NewPageDialog({ parentId, onClose }: { parentId: string; onClose
   const parentTitle = useStore(s => pagePath(s.tree, parentId).at(-1)?.title);
   const [title, setTitle] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [templates, setTemplates] = useState<PageTemplate[]>([]);
+  const [template, setTemplate] = useState("");
+  const [templateError, setTemplateError] = useState("");
+  const [templatesLoading, setTemplatesLoading] = useState(true);
+  useEffect(() => {
+    if (!currentRepo) return;
+    let live = true;
+    api.templates(currentRepo).then(t => { if (live) setTemplates(t); }, e => { if (live) setTemplateError(e.message); })
+      .finally(() => { if (live) setTemplatesLoading(false); });
+    return () => { live = false; };
+  }, [currentRepo]);
   const canCreate = !!title.trim();
 
   const doCreate = async () => {
     if (!currentRepo || !canCreate || submitting) return;
     setSubmitting(true);
     try {
-      const res = await api.createPage(currentRepo, { parent_id: parentId, title: title.trim() });
+      const res = await api.createPage(currentRepo, { parent_id: parentId, title: title.trim(), template });
       await useStore.getState().refreshTree();
       onClose();
       toast.success("已创建");
@@ -368,6 +379,17 @@ export function NewPageDialog({ parentId, onClose }: { parentId: string; onClose
           onChange={(e) => setTitle(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") void doCreate(); }}
         />
+        <label className="mt-3 block text-xs text-stone-500">模板
+          <select aria-label="模板" value={template} onChange={e => setTemplate(e.target.value)} className={`${input} mt-1`} disabled={templatesLoading}>
+            <option value="">{templatesLoading ? "正在加载模板…" : "空白页面"}</option>
+            {templates.map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
+          </select>
+        </label>
+        {templateError && <p role="alert" className="mt-2 text-xs text-red-600">模板加载失败：{templateError}。仍可创建空白页面。</p>}
+        {template && <div className="mt-3 max-h-48 overflow-auto rounded border border-stone-200 bg-stone-50 p-3">
+          <p className="text-xs text-stone-500">{templates.find(t => t.id === template)?.description || "模板内容"}</p>
+          <pre className="mt-2 whitespace-pre-wrap break-words font-sans text-xs text-stone-700">{templates.find(t => t.id === template)?.body}</pre>
+        </div>}
       </div>
       <div className={dialogFooter}>
         <button onClick={onClose} className={btnGhost}>取消</button>

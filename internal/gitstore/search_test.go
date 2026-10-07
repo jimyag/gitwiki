@@ -1,8 +1,11 @@
 package gitstore
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSearch(t *testing.T) {
@@ -13,7 +16,7 @@ func TestSearch(t *testing.T) {
 	writeFile(t, dir, "content/go.md", "---\ntitle: \"Go\"\n---\nWriting a Wiki in Go.\n")
 
 	search := func(q string) []SearchHit {
-		hits, err := r.Search(t.Context(), q)
+		hits, err := r.Search(t.Context(), q, SearchOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -41,5 +44,70 @@ func TestSearch(t *testing.T) {
 	}
 	if hits := search("提示"); len(hits) != 1 || !strings.Contains(hits[0].Snippet, "冲突会提示") {
 		t.Errorf("snippet: %+v", hits)
+	}
+}
+
+func TestSearchFilters(t *testing.T) {
+	r := setupRepo(t)
+	dir := r.cfg.Workdir
+	writeFile(t, dir, "content/team/_index.md", "---\ntitle: Team\ntags: [ops]\n---\nneedle\n")
+	writeFile(t, dir, "content/team/old.md", "---\ntitle: Old\ntags: [ops]\ndate: 2099-01-01\n---\nneedle\n")
+	writeFile(t, dir, "content/team-old.md", "---\ntitle: Outside\ntags: [ops]\n---\nneedle\n")
+	commitAt := func(at string) {
+		t.Helper()
+		mustGit(t, dir, "add", "content")
+		if err := r.gitEnv(t.Context(), []string{"GIT_AUTHOR_DATE=" + at, "GIT_COMMITTER_DATE=" + at}, "commit", "-m", "fixture"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commitAt("2020-01-01T00:00:00Z")
+	writeFile(t, dir, "content/team/new.md", "---\ntitle: New\ntags: [ops]\ndraft: true\ndate: 2000-01-01\n---\nneedle\n")
+	commitAt("2021-01-01T00:00:00Z")
+	writeFile(t, dir, "content/team/untracked.md", "---\ntitle: Untracked\ntags: [ops]\n---\nneedle\n")
+	draft, published := true, false
+	after := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name, query string
+		opts        SearchOptions
+		want        string
+	}{
+		{"directory boundary", "needle", SearchOptions{Directory: "team"}, "team/new team/old team team/untracked"},
+		{"filter only", "", SearchOptions{Directory: "team", Tag: "ops", Draft: &draft}, "team/new"},
+		{"non draft", "needle", SearchOptions{Directory: "team", Draft: &published}, "team/old team team/untracked"},
+		{"commit time inclusive", "needle", SearchOptions{Directory: "team", UpdatedAfter: after}, "team/new"},
+		{"after commit", "needle", SearchOptions{UpdatedAfter: after.Add(time.Second)}, ""},
+		{"combined", "needle", SearchOptions{Directory: "team", Tag: "ops", Draft: &draft, UpdatedAfter: after}, "team/new"},
+		{"missing tag", "needle", SearchOptions{Tag: "op"}, ""},
+		{"keyword still required", "missing", SearchOptions{Draft: &draft}, ""},
+		{"empty search", "", SearchOptions{}, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			hits, err := r.Search(t.Context(), tt.query, tt.opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids := []string{}
+			for _, hit := range hits {
+				ids = append(ids, hit.PageID)
+				if hit.Terms == nil {
+					t.Fatal("terms must serialize as an array")
+				}
+			}
+			if got := strings.Join(ids, " "); got != tt.want {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+	for _, opts := range []SearchOptions{{Directory: "../team"}, {Tag: strings.Repeat("x", 257)}} {
+		if _, err := r.Search(t.Context(), "needle", opts); !errors.Is(err, ErrBadPath) {
+			t.Fatalf("invalid filters: %v", err)
+		}
+	}
+	for i := range maxSearchHits + 1 {
+		writeFile(t, dir, fmt.Sprintf("content/many/%02d.md", i), "---\ntitle: A\n---\nneedle\n")
+	}
+	hits, err := r.Search(t.Context(), "needle", SearchOptions{Draft: &draft})
+	if err != nil || len(hits) != 1 || hits[0].PageID != "team/new" {
+		t.Fatalf("filters must run before result limit: %+v, %v", hits, err)
 	}
 }

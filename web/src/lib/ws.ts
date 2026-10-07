@@ -1,4 +1,5 @@
 import { useStore, type RemoteCursor } from "../store";
+import { followPageMove } from "./actions";
 
 let ws: WebSocket | null = null;
 let currentKey: string | null = null;
@@ -16,6 +17,9 @@ export function connectPresence(slug: string, pageId: string) {
       const st = useStore.getState();
       if (msg.type === "peers") {
         st.setPeers(msg.peers || []);
+      } else if (msg.type === "moved") {
+        followPageMove(slug, msg.from, msg.to);
+        void st.refreshTree();
       } else if (msg.type === "changed") {
         // Someone (or a commit pulled from GitHub: no user) changed pages: the tree may differ,
         // and the open page may now be stale.

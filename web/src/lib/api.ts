@@ -57,10 +57,10 @@ export interface SyncStatus {
 export interface Repo { slug: string; title: string; can_write: boolean; site_url?: string; source?: string[] }
 export interface PageMeta {
   id: string; title: string; is_dir: boolean; has_body: boolean;
-  tags?: string[]; draft?: boolean; children?: PageMeta[];
+  tags?: string[]; draft?: boolean; deprecated?: boolean; children?: PageMeta[];
 }
 // Front matter fields the properties panel edits.
-export interface Meta { tags: string[]; draft: boolean; description: string; date: string }
+export interface Meta { tags: string[]; draft: boolean; description: string; date: string; deprecated?: boolean; replaced_by?: string }
 export interface PageContent {
   id: string; title: string; body: string; meta: Meta; base_sha: string; is_bundle: boolean;
   last_author?: string; last_commit_sha?: string; last_commit_at?: string;
@@ -82,7 +82,11 @@ export interface Change {
   deleted?: boolean; // the change deleted the page; restorePage(id, sha) undoes it
 }
 export interface PageRef { id: string; title: string }
-export interface SearchHit { page_id: string; title: string; snippet: string; terms: string[] }
+export interface SearchHit { page_id: string; title: string; snippet: string; terms: string[]; deprecated?: boolean }
+export interface PageTemplate { id: string; title: string; description: string; body: string }
+export interface HealthPage { id: string; title: string; file: string; body: string; meta: Meta }
+export interface HealthSnapshot { pages: HealthPage[]; files: string[] }
+export interface SearchFilters { directory?: string; tag?: string; draft?: string; updated_after?: string }
 export interface AssetUpload { path: string }
 export interface CommentAnchor {
   quote: string; prefix: string; suffix: string; start_raw: number; end_raw: number;
@@ -97,6 +101,8 @@ export const api = {
   syncStatus: (slug: string) => req<SyncStatus>(`/api/repos/${slug}/sync`),
   syncNow: (slug: string) => req<SyncStatus>(`/api/repos/${slug}/sync`, post({})),
   pageTree: (slug: string) => req<PageMeta>(`/api/repos/${slug}/pages`),
+  templates: (slug: string) => req<PageTemplate[]>(`/api/repos/${slug}/templates`),
+  health: (slug: string) => req<HealthSnapshot>(`/api/repos/${slug}/health`),
   readPage: (slug: string, id: string) => req<PageContent>(`/api/repos/${slug}/page?id=${q(id)}`),
   savePage: async (slug: string, p: { id: string; title: string; body: string; meta?: Meta; base_sha: string; message?: string }) => {
     const r = await call(`/api/repos/${slug}/page`, { method: "PUT", headers: jsonHeaders, body: JSON.stringify(p) });
@@ -104,7 +110,7 @@ export const api = {
     if (!r.ok) throw new ApiError(r.status, await r.text().catch(() => ""));
     return (await r.json()) as SaveResult;
   },
-  createPage: (slug: string, p: { parent_id?: string; title: string }) =>
+  createPage: (slug: string, p: { parent_id?: string; title: string; template?: string }) =>
     req<{ id: string }>(`/api/repos/${slug}/page`, post(p)),
   // Deletes the page with its children and attachments; restorePage brings them back.
   deletePage: (slug: string, id: string) =>
@@ -124,7 +130,11 @@ export const api = {
   // subtree: also pages linking to any page under id.
   backlinks: (slug: string, id: string, subtree = false) =>
     req<PageRef[]>(`/api/repos/${slug}/backlinks?id=${q(id)}${subtree ? "&subtree=1" : ""}`),
-  search: (slug: string, query: string) => req<SearchHit[]>(`/api/repos/${slug}/search?q=${q(query)}`),
+  search: (slug: string, query: string, filters: SearchFilters = {}) => {
+    const params = new URLSearchParams({ q: query });
+    for (const [key, value] of Object.entries(filters)) if (value) params.set(key, value);
+    return req<SearchHit[]>(`/api/repos/${slug}/search?${params}`);
+  },
   trash: (slug: string) => req<Change[]>(`/api/repos/${slug}/trash`),
   comments: (slug: string, pageId: string) => req<Comment[]>(`/api/repos/${slug}/comments?page_id=${q(pageId)}`),
   postComment: (slug: string, body: { page_id: string; text: string; anchor?: CommentAnchor; save: boolean }) =>

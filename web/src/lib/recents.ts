@@ -50,3 +50,10 @@ export function toggleFavorite(repo: string, page: string, title: string): boole
 export function isFavorite(repo: string, page: string) {
   return read(FAVS_KEY).some(e => e.repo === repo && e.page === page);
 }
+
+export function moveRecentPages(repo: string, from: string, to: string) {
+  for (const key of [RECENTS_KEY, FAVS_KEY]) {
+    localStorage.setItem(key, JSON.stringify(read(key).map(e => e.repo === repo && (e.page === from || e.page.startsWith(from + "/"))
+      ? { ...e, page: to + e.page.slice(from.length) } : e)));
+  }
+}

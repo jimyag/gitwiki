@@ -34,6 +34,8 @@ interface State {
   tree: PageMeta | null;
   refreshTree(): Promise<void>;
   currentPageId: string | null;
+  requestedLine: number;
+  requestLine(line: number): void;
   // Bumped to make the editor refetch the current page (part of its React key).
   pageRev: number;
   baseSha: string;
@@ -112,6 +114,8 @@ export const useStore = create<State>((set, get) => ({
     }
   },
   currentPageId: null,
+  requestedLine: 0,
+  requestLine: (requestedLine) => set({ requestedLine }),
   pageRev: 0,
   baseSha: "",
   dirty: false,

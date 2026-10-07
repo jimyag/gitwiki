@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "re
 import { createPortal } from "react-dom";
 import { useCanWrite, useRepoInfo, useStore } from "../store";
 import { api, isNotFound, type ConflictResult, type Meta, type PageContent, type PageRef, type Revision, type RevisionContent } from "../lib/api";
-import { pagePath } from "../lib/tree";
+import { pageExists, pagePath } from "../lib/tree";
 import { HOME, pathFor, setHash } from "../lib/route";
 import { clearDraft, loadDraft, saveDraft, type Draft } from "../lib/draft";
 import { formatRelativeTime } from "../lib/format";
@@ -62,6 +62,8 @@ export function Editor() {
   const bumpBaseSha = useStore(s => s.bumpBaseSha);
   const saveStatus = useStore(s => s.saveStatus);
   const canWrite = useCanWrite();
+  const tree = useStore(s => s.tree);
+  const requestedLine = useStore(s => s.requestedLine);
   const repoInfo = useRepoInfo();
   // Known from the tree before the page itself loads, so the title shows immediately.
   const treeTitle = useStore(s => pagePath(s.tree, s.currentPageId).at(-1)?.title);
@@ -162,6 +164,17 @@ export function Editor() {
     block.scrollIntoView({ block: "start" });
   }, [mode]);
 
+  useEffect(() => {
+    if (!loaded || !requestedLine) return;
+    setLine(requestedLine);
+    setMode(canWrite ? "edit" : "view");
+    if (!canWrite) {
+      const blocks = [...(scrollRef.current?.querySelectorAll<HTMLElement>("[data-line]") ?? [])];
+      blocks.filter(b => Number(b.dataset.line) <= requestedLine).at(-1)?.scrollIntoView({ block: "center" });
+    }
+    useStore.getState().requestLine(0);
+  }, [loaded, requestedLine, canWrite]);
+
   function applyLoaded(pc: PageContent) {
     setLoaded({
       title: pc.title,
@@ -188,6 +201,16 @@ export function Editor() {
 
   const latest = useRef<Draft | null>(null);
   latest.current = dirty && loaded ? { title: titleInput, body: draft ?? loaded.body, meta, baseSha, at: Date.now() } : null;
+  useEffect(() => {
+    const moved = (event: Event) => {
+      const d = (event as CustomEvent<{ repo: string; from: string; to: string; ok: boolean }>).detail;
+      if (!latest.current || d.repo !== currentRepo || !pageId || !(pageId === d.from || pageId.startsWith(d.from + "/"))) return;
+      d.ok = saveDraft(d.repo, d.to + pageId.slice(d.from.length), latest.current);
+      if (d.ok) latest.current = null; // cleanup must not recreate a draft at the old address
+    };
+    window.addEventListener("gitwiki:page-moved", moved);
+    return () => window.removeEventListener("gitwiki:page-moved", moved);
+  }, [currentRepo, pageId]);
   useEffect(() => {
     if (!dirty || !currentRepo || !pageId) return;
     const t = setTimeout(() => latest.current && saveDraft(currentRepo, pageId, latest.current), 500);
@@ -414,6 +437,17 @@ export function Editor() {
         <article className="w-full max-w-[720px] mx-auto px-5 sm:px-10 pt-8 sm:pt-12 pb-24">
           <h1 className={titleClass}>{titleInput || treeTitle || fallbackTitle}</h1>
 
+          {meta.deprecated && (
+            <div role="note" className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <p>此文档已废弃，请勿继续按其中的说明操作。</p>
+              {meta.replaced_by && (tree && pageExists(tree, meta.replaced_by) ? (
+                <a href={pathFor(currentRepo, meta.replaced_by)} onClick={e => { e.preventDefault(); useStore.getState().openPage(meta.replaced_by!); }} className="mt-1 inline-block underline">
+                  查看替代页面：{meta.replaced_by === HOME ? "首页" : pagePath(tree, meta.replaced_by).at(-1)?.title}
+                </a>
+              ) : <p className="mt-1">替代页面已不存在，请联系文档维护者。</p>)}
+            </div>
+          )}
+
           <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px] text-stone-400">
             {loaded?.meta.draft && (
               <span className="rounded bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-700 ring-1 ring-amber-200" title="草稿不会发布到站点">草稿</span>
@@ -422,8 +456,12 @@ export function Editor() {
               <span className="inline-flex items-center gap-1.5">
                 <Avatar login={loaded.last_author} className="size-5 text-[9px]" />
                 <span className="text-stone-700">{loaded.last_author}</span>
-                <span title={loaded.last_commit_at && new Date(loaded.last_commit_at).toLocaleString()}>编辑于 {formatRelativeTime(loaded.last_commit_at)}</span>
               </span>
+            )}
+            {loaded?.last_commit_at && (
+              <time dateTime={loaded.last_commit_at}>
+                最后更新：{new Date(loaded.last_commit_at).toLocaleString([], { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })}
+              </time>
             )}
             {!!loaded?.meta.tags.length && (
               <span className="flex flex-wrap gap-1.5">
