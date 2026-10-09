@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net/http"
@@ -22,14 +23,18 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 	as := auth.NewStore(cfg)
-	gm := gitstore.NewManager(cfg)
+	app, err := auth.NewApp(cfg.Github.ClientID, cfg.Github.PrivateKeyFile)
+	if err != nil {
+		log.Fatalf("load GitHub App private key: %v", err)
+	}
+	gm := gitstore.NewManager(cfg.DataDir, app.Token, app.Repo)
 	ph := presence.NewHub(as)
-	gm.StartSync(ph.BroadcastSync, func(slug string, pages []string) { ph.BroadcastChanged(slug, "", pages...) })
+	gm.StartSync(context.Background(), ph.BroadcastSync, func(slug string, pages []string) { ph.BroadcastChanged(slug, "", pages...) })
 	static, err := gitweb.Dist()
 	if err != nil {
 		log.Fatalf("load embedded dist: %v (run `bun --cwd web run build` first)", err)
 	}
-	s := server.New(cfg, as, gm, ph, static)
+	s := server.New(as, gm, ph, static)
 
 	log.Printf("listening on %s", cfg.Listen)
 	if err := http.ListenAndServe(cfg.Listen, s.Handler()); err != nil {

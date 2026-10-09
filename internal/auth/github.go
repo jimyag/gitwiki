@@ -21,7 +21,7 @@ type User struct {
 	Login string `json:"login"`
 	Name  string `json:"name"`
 	Email string `json:"email"`
-	Token string `json:"-"` // oauth access token, used for git push
+	Token string `json:"-"` // the GitHub App's user access token: who this is and what they may do
 }
 
 type Store struct {
@@ -29,6 +29,22 @@ type Store struct {
 
 	permMu sync.Mutex
 	perms  map[string]permEntry // login, GitHub repo and token digest
+	lists  map[string]listEntry // login and token digest
+}
+
+// UserRepo is a wiki someone can see: a repo the App is installed on that they may read.
+type UserRepo struct {
+	FullName    string `json:"full_name"`
+	Name        string `json:"name"`
+	Permissions struct {
+		Pull bool `json:"pull"`
+		Push bool `json:"push"`
+	} `json:"permissions"`
+}
+
+type listEntry struct {
+	repos []UserRepo
+	at    time.Time
 }
 
 // Access is what a user may do with a repo: Read (GitHub "pull") lets them browse the wiki,
@@ -50,7 +66,69 @@ var ErrUnauthorized = errors.New("github login expired; sign in again")
 var githubAPI = "https://api.github.com"
 
 func NewStore(cfg *config.Config) *Store {
-	return &Store{cfg: cfg, perms: map[string]permEntry{}}
+	return &Store{cfg: cfg, perms: map[string]permEntry{}, lists: map[string]listEntry{}}
+}
+
+// Repos lists the repos the App is installed on that u can see, with u's permissions on each:
+// the wikis to offer them. A user token only reaches installations of this App. Answers are
+// cached like Access.
+func (s *Store) Repos(ctx context.Context, u *User) ([]UserRepo, error) {
+	if u.Token == "" {
+		return nil, ErrUnauthorized
+	}
+	key := fmt.Sprintf("%s\x00%x", u.Login, sha256.Sum256([]byte(u.Token)))
+	s.permMu.Lock()
+	e, ok := s.lists[key]
+	s.permMu.Unlock()
+	if ok && time.Since(e.at) < permTTL {
+		return e.repos, nil
+	}
+	var installs struct {
+		Installations []struct {
+			ID int64 `json:"id"`
+		} `json:"installations"`
+	}
+	if err := userGet(ctx, u.Token, "/user/installations?per_page=100", &installs); err != nil {
+		return nil, err
+	}
+	repos := []UserRepo{}
+	for _, in := range installs.Installations {
+		for page := 1; ; page++ {
+			var body struct {
+				Repositories []UserRepo `json:"repositories"`
+			}
+			if err := userGet(ctx, u.Token, fmt.Sprintf("/user/installations/%d/repositories?per_page=100&page=%d", in.ID, page), &body); err != nil {
+				return nil, err
+			}
+			repos = append(repos, body.Repositories...)
+			if len(body.Repositories) < 100 {
+				break
+			}
+		}
+	}
+	s.permMu.Lock()
+	s.lists[key] = listEntry{repos: repos, at: time.Now()}
+	s.permMu.Unlock()
+	return repos, nil
+}
+
+// userGet reads a GitHub API path as the user; a rejected token is ErrUnauthorized.
+func userGet(ctx context.Context, token, path string, out any) error {
+	req, _ := http.NewRequestWithContext(ctx, "GET", githubAPI+path, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized:
+		return ErrUnauthorized
+	case resp.StatusCode != http.StatusOK:
+		return fmt.Errorf("github %s: %s", path, resp.Status)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
 }
 
 // BeginAuth redirects to GitHub authorize page. state is returned via the cookie-less
@@ -70,10 +148,10 @@ func (s *Store) BeginAuth(w http.ResponseWriter, r *http.Request) {
 	if next := r.URL.Query().Get("next"); localPath(next) {
 		http.SetCookie(w, &http.Cookie{Name: "oauth_next", Value: url.QueryEscape(next), Path: "/", HttpOnly: true, MaxAge: 300})
 	}
+	// A GitHub App's permissions come from its registration, not from scopes.
 	q := url.Values{
 		"client_id": {s.cfg.Github.ClientID},
 		"state":     {state},
-		"scope":     {"repo user:email"},
 	}
 	http.Redirect(w, r, "https://github.com/login/oauth/authorize?"+q.Encode(), http.StatusFound)
 }

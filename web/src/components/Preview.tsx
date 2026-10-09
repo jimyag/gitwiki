@@ -1,15 +1,16 @@
 import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSlug from "rehype-slug";
 import type { Root } from "hast";
 import { AlertTriangle, Check, Copy, Info, Lightbulb, MessageSquareWarning, OctagonAlert, Paperclip } from "lucide-react";
 import { useStore } from "../store";
-import { api } from "../lib/api";
+import { api, type PageMeta } from "../lib/api";
 import { highlight } from "../lib/highlight";
 import { pageLink, pathFor, setHash } from "../lib/route";
-import { pageExists } from "../lib/tree";
-import { attachmentName } from "../lib/format";
+import { pageExists, pagePath } from "../lib/tree";
+import { attachmentName, formatRelativeTime } from "../lib/format";
 import { alertLabels, remarkAlerts, remarkShortcodes, useMathPlugins, type AlertType } from "../lib/markdown";
 import { Mermaid } from "./Mermaid";
 
@@ -54,7 +55,7 @@ export const Preview = memo(function Preview({ body, onHeadings }: {
     src.startsWith("assets/") && currentRepo && pageId ? api.assetUrl(currentRepo, pageId, decodeURIComponent(src.slice(7))) : src;
 
   return (
-    <article ref={ref} className="prose-preview text-[16px] text-stone-700">
+    <article ref={ref} className="prose-preview text-[16px] leading-[1.8] text-fg-2">
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkAlerts, remarkShortcodes, ...(math ? [math.remark] : [])]}
         rehypePlugins={[rehypeSlug, ...(math ? [math.rehype] : []), [rehypeLines, lines]]}
@@ -62,21 +63,21 @@ export const Preview = memo(function Preview({ body, onHeadings }: {
         components={{
           img: ({ src, alt, node: _, ...rest }) => <ZoomableImage src={assetUrl(typeof src === "string" ? src : "")} alt={alt ?? ""} {...rest} />,
           a: ({ href, children }) => <Link href={href ?? ""} assetUrl={assetUrl}>{children}</Link>,
-          h1: ({ id, children }) => <Heading tag="h1" id={id} className="text-[26px] font-semibold tracking-tight text-stone-900 mt-10 mb-4 leading-snug">{children}</Heading>,
+          h1: ({ id, children }) => <Heading tag="h1" id={id} className="text-[26px] font-semibold tracking-[-0.01em] text-fg mt-12 mb-4 leading-snug">{children}</Heading>,
           // GFM footnotes come with a visually hidden "脚注" heading: keep it hidden.
           h2: ({ id, className, children }) => className?.includes("sr-only")
             ? <h2 id={id} className="sr-only">{children}</h2>
-            : <Heading tag="h2" id={id} className="text-[22px] font-semibold tracking-tight text-stone-900 mt-9 mb-3 leading-snug">{children}</Heading>,
-          h3: ({ id, children }) => <Heading tag="h3" id={id} className="text-[18px] font-semibold text-stone-900 mt-7 mb-2 leading-snug">{children}</Heading>,
-          h4: ({ id, children }) => <Heading tag="h4" id={id} className="text-base font-semibold text-stone-900 mt-6 mb-2">{children}</Heading>,
-          p: ({ children }) => <p className="my-4 leading-[1.8]">{children}</p>,
-          ul: ({ className, children }) => <ul className={`${className ?? ""} my-4 pl-6 space-y-1 list-disc marker:text-stone-300`}>{children}</ul>,
-          ol: ({ className, children }) => <ol className={`${className ?? ""} my-4 pl-6 space-y-1 list-decimal marker:text-stone-400`}>{children}</ol>,
+            : <Heading tag="h2" id={id} className="text-[22px] font-semibold tracking-[-0.01em] text-fg mt-11 mb-3 leading-snug">{children}</Heading>,
+          h3: ({ id, children }) => <Heading tag="h3" id={id} className="text-[18px] font-semibold text-fg mt-8 mb-2 leading-snug">{children}</Heading>,
+          h4: ({ id, children }) => <Heading tag="h4" id={id} className="text-base font-semibold text-fg mt-6 mb-2">{children}</Heading>,
+          p: ({ children }) => <p className="my-4">{children}</p>,
+          ul: ({ className, children }) => <ul className={`${className ?? ""} my-4 pl-6 space-y-1.5 list-disc marker:text-fg-subtle`}>{children}</ul>,
+          ol: ({ className, children }) => <ol className={`${className ?? ""} my-4 pl-6 space-y-1.5 list-decimal marker:text-fg-muted`}>{children}</ol>,
           // A list inside an item keeps close to it, rather than the gap between paragraphs.
-          li: ({ className, children }) => <li className={`${className ?? ""} leading-[1.8] pl-0.5 [&>ol]:my-1 [&>ul]:my-1`}>{children}</li>,
+          li: ({ className, children }) => <li className={`${className ?? ""} pl-0.5 [&>ol]:my-1.5 [&>ul]:my-1.5`}>{children}</li>,
           // Only inline code reaches here: fenced blocks are rendered whole by `pre` below.
           code: ({ children }) => (
-            <code className="bg-stone-100 text-stone-800 rounded px-1.5 py-0.5 text-[0.875em] font-mono">{children}</code>
+            <code className="rounded-md bg-shade px-1.5 py-0.5 font-mono text-[0.85em] text-fg">{children}</code>
           ),
           pre: ({ node }) => {
             const code = node?.children[0];
@@ -92,18 +93,18 @@ export const Preview = memo(function Preview({ body, onHeadings }: {
             return alert && alert in alertLabels ? <Alert type={alert}>{children}</Alert> : <div {...rest}>{children}</div>;
           },
           blockquote: ({ children }) => (
-            <blockquote className="border-l-[3px] border-stone-200 pl-4 my-5 text-stone-500 [&>p]:my-2">{children}</blockquote>
+            <blockquote className="my-6 border-l-2 border-line-strong pl-4 text-fg-muted [&>p]:my-2">{children}</blockquote>
           ),
           table: ({ children }) => (
-            <div className="overflow-x-auto my-5 rounded-lg border border-stone-200">
+            <div className="my-6 overflow-x-auto rounded-xl ring-1 ring-line">
               <table className="w-full text-sm">{children}</table>
             </div>
           ),
-          thead: ({ children }) => <thead className="bg-stone-50 text-left">{children}</thead>,
-          th: ({ children }) => <th className="px-3 py-2 font-medium text-stone-600 border-b border-stone-200">{children}</th>,
-          td: ({ children }) => <td className="px-3 py-2 align-top border-t border-stone-100">{children}</td>,
-          hr: () => <hr className="my-10 border-t border-stone-200" />,
-          strong: ({ children }) => <strong className="font-semibold text-stone-900">{children}</strong>,
+          thead: ({ children }) => <thead className="bg-subtle text-left">{children}</thead>,
+          th: ({ children }) => <th className="px-3.5 py-2.5 text-[13px] font-medium text-fg-muted">{children}</th>,
+          td: ({ children }) => <td className="px-3.5 py-2.5 align-top border-t border-line">{children}</td>,
+          hr: () => <hr className="my-12 border-t border-line" />,
+          strong: ({ children }) => <strong className="font-semibold text-fg">{children}</strong>,
           em: ({ children }) => <em className="italic">{children}</em>,
         }}
       >
@@ -121,7 +122,7 @@ function rehypeLines(out: { current: number[] }) {
   };
 }
 
-const linkClass = "text-emerald-700 underline decoration-emerald-700/30 underline-offset-[3px] hover:decoration-emerald-700";
+const linkClass = "text-accent-strong underline decoration-accent/35 underline-offset-[3px] transition-colors hover:decoration-accent";
 
 // Link resolves what a page links to: another wiki page (opened in place; marked when it does
 // not exist), an attachment, a section of this page, or another site.
@@ -129,26 +130,42 @@ function Link({ href, assetUrl, children }: { href: string; assetUrl(src: string
   const repo = useStore(s => s.currentRepo);
   const tree = useStore(s => s.tree);
   const target = pageLink(href);
+  // Hovering a link to another page shows what that page is about (mouse only: a tap opens it).
+  const [card, setCard] = useState<DOMRect | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
 
   if (target && repo) {
     const missing = tree !== null && !pageExists(tree, target.id);
+    const other = !missing && target.id !== useStore.getState().currentPageId;
+    const hide = () => { clearTimeout(timer.current); setCard(null); };
     return (
-      <a
-        href={pathFor(repo, target.id) + target.hash}
-        onClick={(e) => {
-          if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return; // new tab/window: let the browser go
-          e.preventDefault();
-          const section = target.hash && decodeURIComponent(target.hash.slice(1));
-          if (target.id === useStore.getState().currentPageId) {
-            if (section) scrollToSection(section);
-            return;
-          }
-          // The table of contents reads the hash when the page opens and scrolls there.
-          if (useStore.getState().openPage(target.id) && section) history.replaceState(null, "", location.pathname + target.hash);
-        }}
-        title={missing ? "页面不存在（可能已被删除或移动）" : undefined}
-        className={missing ? "text-red-600 underline decoration-dashed decoration-red-300 underline-offset-[3px]" : linkClass}
-      >{children}</a>
+      <>
+        <a
+          href={pathFor(repo, target.id) + target.hash}
+          onClick={(e) => {
+            hide();
+            if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return; // new tab/window: let the browser go
+            e.preventDefault();
+            const section = target.hash && decodeURIComponent(target.hash.slice(1));
+            if (target.id === useStore.getState().currentPageId) {
+              if (section) scrollToSection(section);
+              return;
+            }
+            // The table of contents reads the hash when the page opens and scrolls there.
+            if (useStore.getState().openPage(target.id) && section) history.replaceState(null, "", location.pathname + target.hash);
+          }}
+          onPointerEnter={(e) => {
+            if (!other || e.pointerType !== "mouse") return;
+            const el = e.currentTarget;
+            timer.current = setTimeout(() => setCard(el.getBoundingClientRect()), 400);
+          }}
+          onPointerLeave={hide}
+          title={missing ? "页面不存在（可能已被删除或移动）" : undefined}
+          className={missing ? "text-red-600 underline decoration-dashed decoration-red-400/70 underline-offset-[3px] dark:text-red-400" : linkClass}
+        >{children}</a>
+        {card && <LinkCard repo={repo} id={target.id} at={card} />}
+      </>
     );
   }
   if (href.startsWith("assets/")) {
@@ -179,6 +196,69 @@ function Link({ href, assetUrl, children }: { href: string; assetUrl(src: string
   );
 }
 
+interface Summary { title: string; text: string; updated?: string }
+
+// Each linked page is fetched once while the wiki stays the same: any change replaces the tree.
+const summaries = new Map<string, Promise<Summary>>();
+let summariesOf: PageMeta | null = null;
+
+function summary(repo: string, id: string, tree: PageMeta | null): Promise<Summary> {
+  if (tree !== summariesOf) {
+    summaries.clear();
+    summariesOf = tree;
+  }
+  const key = `${repo}/${id}`;
+  let p = summaries.get(key);
+  if (!p) {
+    p = api.readPage(repo, id).then(pc => ({ title: pc.title || id, text: pc.meta.description || excerpt(pc.body), updated: pc.last_commit_at }));
+    p.catch(() => summaries.delete(key)); // try again on the next hover
+    summaries.set(key, p);
+  }
+  return p;
+}
+
+// excerpt is how a page starts, as plain text: markup, code, images and Hugo shortcodes left out.
+function excerpt(body: string): string {
+  const text = body
+    .replace(/(```|~~~)[\s\S]*?\1/g, " ")
+    .replace(/\{\{[<%][\s\S]*?[>%]\}\}/g, " ")
+    .replace(/!\[[^\]]*\]\([^)]*\)|<[^>]+>|\[!\w+\]/g, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^\s*(#{1,6}\s|>\s?|[-*+]\s+(\[[ x]\]\s)?|\d+\.\s)/gim, "")
+    .replace(/[*_`~|$]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.length > 140 ? text.slice(0, 140) + "…" : text;
+}
+
+function LinkCard({ repo, id, at }: { repo: string; id: string; at: DOMRect }) {
+  const tree = useStore(s => s.tree);
+  const [info, setInfo] = useState<Summary | null>(null);
+  useEffect(() => {
+    let live = true;
+    summary(repo, id, tree).then(s => { if (live) setInfo(s); }, () => {});
+    return () => { live = false; };
+  }, [repo, id, tree]);
+  const path = pagePath(tree, id);
+  const where = path.slice(0, -1).map(n => n.title).join(" / ");
+  // Below the link, or above it near the bottom of the window; never off its sides.
+  const below = at.bottom + 160 < innerHeight;
+  const style = { left: Math.max(8, Math.min(at.left, innerWidth - 328)), ...(below ? { top: at.bottom + 8 } : { bottom: innerHeight - at.top + 8 }) };
+  return createPortal(
+    <div role="tooltip" style={style} className="pointer-events-none fixed z-50 w-80 rounded-xl bg-raised px-4 py-3 shadow-pop animate-pop-in">
+      {where && <div className="truncate text-xs text-fg-subtle">{where}</div>}
+      <div className="text-sm font-semibold text-fg">{info?.title ?? path.at(-1)?.title ?? id}</div>
+      {info ? (
+        <>
+          {info.text && <p className="mt-1 line-clamp-3 text-[13px] leading-relaxed text-fg-muted">{info.text}</p>}
+          {info.updated && <div className="mt-2 text-xs text-fg-subtle">更新于 {formatRelativeTime(info.updated)}</div>}
+        </>
+      ) : <div className="mt-2 h-3 w-3/4 rounded bg-shade animate-pulse" />}
+    </div>,
+    document.body,
+  );
+}
+
 function ZoomableImage({ src, alt, ...rest }: { src: string; alt: string; [k: string]: unknown }) {
   const [open, setOpen] = useState(false);
   return (
@@ -187,13 +267,13 @@ function ZoomableImage({ src, alt, ...rest }: { src: string; alt: string; [k: st
         src={src}
         alt={alt}
         {...rest}
-        className="max-w-full rounded-lg border border-stone-200 my-5 cursor-zoom-in"
+        className="my-6 max-w-full rounded-xl ring-1 ring-line cursor-zoom-in"
         loading="lazy"
         onClick={() => setOpen(true)}
       />
       {open && (
-        <div className="fixed inset-0 z-50 bg-stone-950/80 flex items-center justify-center p-6 cursor-zoom-out" onClick={() => setOpen(false)}>
-          <img src={src} alt={alt} className="max-w-full max-h-full object-contain rounded shadow-2xl" />
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/85 p-6 backdrop-blur-sm cursor-zoom-out animate-fade-in" onClick={() => setOpen(false)}>
+          <img src={src} alt={alt} className="max-w-full max-h-full object-contain rounded-lg shadow-2xl" />
         </div>
       )}
     </>
@@ -208,11 +288,11 @@ function PdfPreview({ href, children }: { href: string; children?: ReactNode }) 
       <a href={href} target="_blank" rel="noreferrer" className={linkClass}>
         <Paperclip className="inline size-3.5 mr-0.5 -mt-0.5" />{children}
       </a>
-      <button onClick={() => setOpen(o => !o)} className="text-xs text-stone-400 hover:text-stone-600 underline underline-offset-2">
+      <button onClick={() => setOpen(o => !o)} className="rounded-md px-1.5 text-xs text-fg-muted transition-colors hover:bg-shade hover:text-fg">
         {open ? "收起" : "预览"}
       </button>
       {open && (
-        <span className="block w-full my-3 rounded-lg border border-stone-200 overflow-hidden" style={{ gridColumn: "1/-1" }}>
+        <span className="block w-full my-3 overflow-hidden rounded-xl ring-1 ring-line" style={{ gridColumn: "1/-1" }}>
           <iframe src={href} title="PDF 预览" className="w-full h-[70vh] bg-white" />
         </span>
       )}
@@ -226,17 +306,17 @@ function scrollToSection(id: string) {
 }
 
 const alertStyle: Record<AlertType, { icon: typeof Info; box: string; title: string }> = {
-  note: { icon: Info, box: "border-sky-500 bg-sky-50/60", title: "text-sky-700" },
-  tip: { icon: Lightbulb, box: "border-emerald-500 bg-emerald-50/60", title: "text-emerald-700" },
-  important: { icon: MessageSquareWarning, box: "border-violet-500 bg-violet-50/60", title: "text-violet-700" },
-  warning: { icon: AlertTriangle, box: "border-amber-500 bg-amber-50/70", title: "text-amber-800" },
-  caution: { icon: OctagonAlert, box: "border-red-500 bg-red-50/60", title: "text-red-700" },
+  note: { icon: Info, box: "bg-sky-500/10 ring-sky-500/25", title: "text-sky-700 dark:text-sky-300" },
+  tip: { icon: Lightbulb, box: "bg-emerald-500/10 ring-emerald-500/25", title: "text-emerald-700 dark:text-emerald-300" },
+  important: { icon: MessageSquareWarning, box: "bg-violet-500/10 ring-violet-500/25", title: "text-violet-700 dark:text-violet-300" },
+  warning: { icon: AlertTriangle, box: "bg-amber-500/10 ring-amber-500/30", title: "text-amber-800 dark:text-amber-300" },
+  caution: { icon: OctagonAlert, box: "bg-red-500/10 ring-red-500/25", title: "text-red-700 dark:text-red-300" },
 };
 
 function Alert({ type, children }: { type: AlertType; children?: ReactNode }) {
   const s = alertStyle[type];
   return (
-    <div className={`my-5 rounded-r-lg border-l-[3px] px-4 py-3 ${s.box} [&>p]:my-1.5 [&>p:last-child]:mb-0`}>
+    <div className={`my-6 rounded-xl px-4 py-3.5 ring-1 ring-inset ${s.box} [&>p]:my-1.5 [&>p:last-child]:mb-0`}>
       <div className={`flex items-center gap-1.5 text-sm font-semibold ${s.title}`}>
         <s.icon className="size-4" />{alertLabels[type]}
       </div>
@@ -259,7 +339,7 @@ function Heading({ tag: Tag, id, className, children }: {
           }}
           aria-hidden
           tabIndex={-1}
-          className="absolute -left-5 top-0 w-5 text-stone-300 opacity-0 group-hover:opacity-100 hover:text-emerald-600 transition"
+          className="absolute -left-5 top-0 w-5 text-fg-subtle opacity-0 transition group-hover:opacity-100 hover:text-accent-strong"
         >#</a>
       )}
       {children}
@@ -285,14 +365,14 @@ function CodeBlock({ lang, code }: { lang?: string; code: string }) {
   };
 
   return (
-    <div className="code-block group my-5 rounded-lg border border-stone-200 bg-stone-50/70 overflow-hidden">
-      <div className="flex items-center h-8 pl-3 pr-1.5 border-b border-stone-200/80 text-xs text-stone-400">
+    <div className="code-block my-6 overflow-hidden rounded-xl bg-subtle ring-1 ring-line">
+      <div className="flex items-center h-9 pl-4 pr-1.5 border-b border-line text-xs text-fg-muted">
         <span className="font-mono">{lang || "text"}</span>
         <button
           onClick={copy}
-          className="ml-auto inline-flex items-center gap-1 h-6 px-1.5 rounded text-stone-400 hover:text-stone-700 hover:bg-stone-200/60 transition"
+          className="ml-auto inline-flex items-center gap-1 h-7 px-2 rounded-md text-fg-muted transition-colors hover:bg-shade hover:text-fg"
         >
-          {copied ? <><Check className="size-3.5 text-emerald-600" />已复制</> : <><Copy className="size-3.5" />复制</>}
+          {copied ? <><Check className="size-3.5 text-accent-strong" />已复制</> : <><Copy className="size-3.5" />复制</>}
         </button>
       </div>
       {/* Same span.line structure as Shiki's output, so line numbers show before highlighting loads. */}

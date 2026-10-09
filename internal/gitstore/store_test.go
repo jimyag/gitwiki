@@ -2,6 +2,7 @@ package gitstore
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jimyag/gitwiki/internal/auth"
 	"github.com/jimyag/gitwiki/internal/config"
 )
 
@@ -16,7 +18,7 @@ func setupRepo(t *testing.T) *Repo {
 	t.Helper()
 	dir := t.TempDir()
 	r := &Repo{cfg: config.Repo{
-		Slug: "t", Workdir: dir, ContentDir: "content", Branch: "main", Github: "x/y",
+		Workdir: dir, ContentDir: "content", Branch: "main", Github: "x/y",
 	}}
 	// init bare repo + clone pattern isn't needed; just init in place
 	mustGit(t, dir, "init", "-b", "main")
@@ -36,6 +38,70 @@ func mustGit(t *testing.T, dir string, args ...string) {
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+}
+
+// A wiki's settings come from .gitwiki/config.yaml in the repo, with defaults for whatever is
+// missing or invalid.
+func TestSettings(t *testing.T) {
+	r := setupRepo(t)
+	r.cfg.Github, r.homepage = "o/team-docs", "https://docs.example.com"
+	if s := r.Settings(); s.Title != "team-docs" || s.ReadPublic || s.SiteURL != "https://docs.example.com" || *s.StaleDays != 180 || len(s.Source) != 0 {
+		t.Errorf("defaults = %+v", s)
+	}
+	writeFile(t, r.cfg.Workdir, ".gitwiki/config.yaml", "title: 团队文档\nread_public: true\nsite_url: https://wiki.example.com\nstale_days: 0\nsource: [markdown, word]\n")
+	if s := r.Settings(); s.Title != "团队文档" || !s.ReadPublic || s.SiteURL != "https://wiki.example.com" || *s.StaleDays != 0 || !slices.Equal(s.Source, []string{"markdown"}) {
+		t.Errorf("settings = %+v", s)
+	}
+	writeFile(t, r.cfg.Workdir, ".gitwiki/config.yaml", "title: [unclosed\n")
+	if s := r.Settings(); s.Title != "team-docs" || s.ReadPublic {
+		t.Errorf("unparsable file = %+v, want the defaults", s)
+	}
+}
+
+// The manager sets a wiki up on first use, under GitHub's spelling of its name: on its "wiki"
+// branch when it has one, else on the default branch, and on whatever branch a working copy
+// already on disk has. Repos without the App are not found.
+func TestManagerGet(t *testing.T) {
+	data := t.TempDir()
+	mustGit(t, data, "init", "-q", "-b", "outer") // data_dir inside another checkout
+	disk := filepath.Join(data, "o", "disk")
+	// o/split's directory exists with no copy in it: it must not take the outer branch.
+	for _, dir := range []string{disk, filepath.Join(data, "o", "split")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustGit(t, disk, "init", "-q", "-b", "docs")
+	mustGit(t, disk, "-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-q", "--allow-empty", "-m", "init")
+	infos := map[string]auth.RepoInfo{
+		"o/plain": {FullName: "o/Plain", Name: "Plain", DefaultBranch: "main"},
+		"o/split": {FullName: "o/split", Name: "split", DefaultBranch: "main", WikiBranch: true},
+		"o/disk":  {FullName: "o/disk", Name: "disk", DefaultBranch: "main", WikiBranch: true},
+	}
+	lookups := 0
+	m := NewManager(data, nil, func(_ context.Context, name string) (auth.RepoInfo, error) {
+		lookups++
+		if info, ok := infos[strings.ToLower(name)]; ok {
+			return info, nil
+		}
+		return auth.RepoInfo{}, auth.ErrNotInstalled
+	})
+	for name, want := range map[string][2]string{
+		"O/plain": {"main", filepath.Join(data, "o", "Plain")},
+		"o/split": {"wiki", filepath.Join(data, "o", "split")},
+		"o/disk":  {"docs", disk},
+	} {
+		r, err := m.Get(t.Context(), name)
+		if err != nil || r.cfg.Branch != want[0] || r.cfg.Workdir != want[1] {
+			t.Errorf("Get(%s) = %+v, %v; want branch %s in %s", name, r, err, want[0], want[1])
+		}
+	}
+	if r, err := m.Get(t.Context(), "o/plain"); err != nil || r.Slug() != "o/Plain" || lookups != 3 {
+		t.Errorf("second Get = %v, %v after %d lookups; want the same wiki, set up once", r, err, lookups)
+	}
+	if _, err := m.Get(t.Context(), "o/none"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Get(o/none) = %v, want ErrNotFound", err)
 	}
 }
 

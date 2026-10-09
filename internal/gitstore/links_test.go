@@ -2,6 +2,7 @@ package gitstore
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -53,6 +54,42 @@ func TestMovePageRewritesLinks(t *testing.T) {
 	writeFile(t, dir, "content/c.md", "x\n")
 	if _, _, err := r.MovePage(t.Context(), "a/b/c", "", tester); !errors.Is(err, ErrExists) {
 		t.Errorf("move onto an existing page: %v", err)
+	}
+}
+
+// A moved page and its children keep their old addresses as Hugo aliases; moving back drops
+// the address the page has again, and a page with its own url keeps that.
+func TestMovePageAddsAliases(t *testing.T) {
+	r := setupRepo(t)
+	dir := r.cfg.Workdir
+	writeFile(t, dir, "content/b/_index.md", "---\ntitle: \"B\"\naliases: [\"/legacy/\"]\n---\nB\n")
+	writeFile(t, dir, "content/b/c.md", "C\n")
+	writeFile(t, dir, "content/b/fixed.md", "---\nurl: \"/fixed/\"\n---\nF\n")
+	mustGit(t, dir, "add", ".")
+	mustGit(t, dir, "commit", "-m", "pages")
+	aliases := func(ids ...string) string {
+		t.Helper()
+		var out []string
+		for _, id := range ids {
+			pc, _, err := r.ReadPage(t.Context(), id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, fmt.Sprint(pc.RawMeta["aliases"]))
+		}
+		return strings.Join(out, " ")
+	}
+	if _, n, err := r.MovePage(t.Context(), "b", "a", tester); err != nil || n != 0 {
+		t.Fatalf("move = %d links, %v; aliases are not link updates", n, err)
+	}
+	if got := aliases("a/b", "a/b/c", "a/b/fixed"); got != "[/legacy/ /b/] [/b/c/] <nil>" {
+		t.Errorf("aliases after move = %s", got)
+	}
+	if _, _, err := r.MovePage(t.Context(), "a/b", "", tester); err != nil {
+		t.Fatal(err)
+	}
+	if got := aliases("b", "b/c"); got != "[/legacy/ /a/b/] [/a/b/c/]" {
+		t.Errorf("aliases after moving back = %s", got)
 	}
 }
 
@@ -112,7 +149,8 @@ func TestMovePageKeepsCommentsAndReferences(t *testing.T) {
 		t.Errorf("references after move:\n%s\nwant:\n%s", got, want)
 	}
 	page, _, err := r.ReadPage(t.Context(), "a/b")
-	if err != nil || page.Body != "![own](assets/x.png)\n[outside](..)\n" {
+	// The body now follows front matter: the page's old address, kept as a Hugo alias.
+	if err != nil || page.Body != "\n![own](assets/x.png)\n[outside](..)\n" {
 		t.Errorf("moved page = %+v, %v", page, err)
 	}
 	if st := gitLines(t, dir, "status", "--porcelain"); len(st) != 0 {

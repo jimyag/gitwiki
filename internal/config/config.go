@@ -1,39 +1,41 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"gopkg.in/yaml.v3"
 )
 
+// Repo is one wiki as the server keeps it: a GitHub repo the App is installed on, with its
+// working copy. It is worked out at run time (see gitstore.Manager); the wiki's own settings
+// live in the repo, in .gitwiki/config.yaml.
 type Repo struct {
-	Slug       string `yaml:"slug"`
-	Github     string `yaml:"github"` // owner/name
-	Branch     string `yaml:"branch"`
-	Workdir    string `yaml:"workdir"`
-	ContentDir string `yaml:"content_dir"`
-	Title      string `yaml:"title"`
-	SiteURL    string `yaml:"site_url"` // optional: the published Hugo site, for "在站点中查看" links
-	// ReadPublic lets anyone read without logging in (e.g. an intranet wiki).
-	// Writes always need a GitHub login with push access.
-	ReadPublic bool `yaml:"read_public"`
-	// Source lists types ("markdown", "mediawiki") whose /import endpoint converts
-	// pasted markup into gitwiki markdown.
-	Source []string `yaml:"source"`
+	Github     string // "owner/repo" as GitHub spells it, which is also the wiki's address in gitwiki
+	Branch     string
+	Workdir    string
+	ContentDir string
 }
 
+// Config is the server's: where it listens, the GitHub App it runs as, and where it keeps
+// working copies. Which repos are wikis, and how each behaves, comes from GitHub and the repos.
 type Config struct {
 	Listen string `yaml:"listen"` // e.g. ":8080"
 
+	// The GitHub App: people log in through it, and the server clones, pulls and pushes as it.
 	Github struct {
-		ClientID     string `yaml:"client_id"`
-		ClientSecret string `yaml:"client_secret"`
+		ClientID       string `yaml:"client_id"`
+		ClientSecret   string `yaml:"client_secret"`
+		PrivateKeyFile string `yaml:"private_key_file"` // the App's .pem private key
 	} `yaml:"github"`
 
 	SessionSecret string `yaml:"session_secret"`
 
-	Repos []Repo `yaml:"repos"`
+	// DataDir holds the working copies, one per wiki at <data_dir>/<owner>/<repo>.
+	DataDir string `yaml:"data_dir"`
 }
 
 func Load(path string) (*Config, error) {
@@ -42,46 +44,25 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	var c Config
-	if err := yaml.Unmarshal(data, &c); err != nil {
-		return nil, err
+	// Unknown keys are errors: a repos: list left from before wikis came from the App's
+	// installations would otherwise be dropped silently, with any unpushed commits in its
+	// working copies.
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&c); err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if c.Listen == "" {
 		c.Listen = ":8080"
 	}
+	if c.DataDir == "" {
+		c.DataDir = "./data/repos"
+	}
 	if c.SessionSecret == "" {
 		return nil, fmt.Errorf("session_secret is required")
 	}
-	if len(c.Repos) == 0 {
-		return nil, fmt.Errorf("at least one repo is required")
-	}
-	for i := range c.Repos {
-		r := &c.Repos[i]
-		if r.Slug == "" || r.Github == "" || r.Workdir == "" {
-			return nil, fmt.Errorf("repo %d: slug, github, workdir are required", i)
-		}
-		if r.Branch == "" {
-			r.Branch = "main"
-		}
-		if r.ContentDir == "" {
-			r.ContentDir = "content"
-		}
-		for _, src := range r.Source {
-			if src != "markdown" && src != "mediawiki" {
-				return nil, fmt.Errorf("repo %s: unknown source type %q", r.Slug, src)
-			}
-		}
-		if r.Title == "" {
-			r.Title = r.Slug
-		}
+	if c.Github.ClientID == "" || c.Github.PrivateKeyFile == "" {
+		return nil, fmt.Errorf("github.client_id and github.private_key_file (the GitHub App's) are required")
 	}
 	return &c, nil
-}
-
-func (c *Config) FindRepo(slug string) *Repo {
-	for i := range c.Repos {
-		if c.Repos[i].Slug == slug {
-			return &c.Repos[i]
-		}
-	}
-	return nil
 }

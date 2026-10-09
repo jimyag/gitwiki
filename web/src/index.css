@@ -1,35 +1,179 @@
 @import "tailwindcss";
 
-/* System fonts only: nothing to download before first paint, and CJK text renders in the
+/* Dark styles only apply on screen: printing a page in dark mode still gives black on white. */
+@custom-variant dark {
+  @media screen {
+    &:where(.dark, .dark *) {
+      @slot;
+    }
+  }
+}
+
+/* Colours are semantic tokens, switched as a set for dark mode (the "dark" class on <html>, set
+   by lib/theme before first paint). Components use bg-surface, text-fg … rather than raw greys.
+   System fonts only: nothing to download before first paint, and CJK text renders in the
    platform's own UI font (PingFang / YaHei). */
 @theme inline {
   --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
   --font-mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+
+  --color-canvas: var(--canvas); /* app background; the sidebar sits on it */
+  --color-surface: var(--surface); /* the content panel */
+  --color-raised: var(--raised); /* dialogs, menus */
+  --color-subtle: var(--subtle); /* code, chips, quiet fills */
+  --color-shade: var(--shade); /* translucent hover/pressed wash, works on any background */
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-fg: var(--fg); /* headings, emphasis */
+  --color-fg-2: var(--fg-2); /* body text */
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-ink: var(--ink); /* primary buttons */
+  --color-ink-fg: var(--ink-fg);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong); /* accent as text: links, active labels */
+  --color-accent-soft: var(--accent-soft);
+
+  --shadow-panel: var(--panel-shadow);
+  --shadow-pop: var(--pop-shadow);
+  --animate-pop-in: pop-in 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --animate-fade-in: fade-in 150ms ease-out;
+}
+
+:root {
+  color-scheme: light;
+  --canvas: #f4f3f1;
+  --surface: #ffffff;
+  --raised: #ffffff;
+  --subtle: #f6f5f4;
+  --shade: rgb(28 25 23 / 0.055);
+  --line: #e9e7e4;
+  --line-strong: #d6d3d1;
+  --fg: #1c1917;
+  --fg-2: #3f3b38;
+  --fg-muted: #78716c;
+  --fg-subtle: #a8a29e;
+  --ink: #1c1917;
+  --ink-fg: #ffffff;
+  --accent: #059669;
+  --accent-strong: #047857;
+  --accent-soft: rgb(16 185 129 / 0.12);
+  --panel-shadow: 0 0 0 1px rgb(28 25 23 / 0.06), 0 1px 2px rgb(28 25 23 / 0.04), 0 4px 16px -6px rgb(28 25 23 / 0.06);
+  --pop-shadow: 0 0 0 1px rgb(28 25 23 / 0.07), 0 12px 32px -8px rgb(28 25 23 / 0.18), 0 2px 6px rgb(28 25 23 / 0.05);
+
+  /* Markdown source highlighting in the editor (GitHub light) */
+  --hl-keyword: #cf222e;
+  --hl-string: #0a3069;
+  --hl-comment: #6e7781;
+  --hl-number: #0550ae;
+  --hl-function: #8250df;
+  --hl-type: #953800;
+  --hl-tag: #116329;
+}
+
+@media screen {
+  .dark {
+    color-scheme: dark;
+    --canvas: #0f0e0d;
+    --surface: #1a1918;
+    --raised: #232120;
+    --subtle: #24221f;
+    --shade: rgb(255 255 255 / 0.065);
+    --line: rgb(255 255 255 / 0.085);
+    --line-strong: rgb(255 255 255 / 0.15);
+    --fg: #f5f5f4;
+    --fg-2: #d6d3d1;
+    --fg-muted: #a8a29e;
+    --fg-subtle: #78716c;
+    --ink: #f5f5f4;
+    --ink-fg: #1c1917;
+    --accent: #10b981;
+    --accent-strong: #34d399;
+    --accent-soft: rgb(16 185 129 / 0.16);
+    --panel-shadow: 0 0 0 1px rgb(255 255 255 / 0.07);
+    --pop-shadow: 0 0 0 1px rgb(255 255 255 / 0.09), 0 16px 40px -8px rgb(0 0 0 / 0.6);
+
+    --hl-keyword: #ff7b72;
+    --hl-string: #a5d6ff;
+    --hl-comment: #8b949e;
+    --hl-number: #79c0ff;
+    --hl-function: #d2a8ff;
+    --hl-type: #ffa657;
+    --hl-tag: #7ee787;
+  }
+}
+
+@keyframes pop-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.985); }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
 }
 
 html, body, #root { height: 100%; }
-body {
-  background: #fff;
-  color: #44403c; /* stone-700 */
-  font-family: var(--font-sans);
-  -webkit-font-smoothing: antialiased;
-}
 
 /* In the base layer so utilities like outline-none still win over it. */
 @layer base {
+  body {
+    background: var(--canvas);
+    color: var(--fg-2);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
   :focus-visible {
-    outline: 2px solid rgb(5 150 105 / 0.5); /* emerald-600 */
+    outline: 2px solid rgb(16 185 129 / 0.55);
     outline-offset: 1px;
   }
+  ::selection { background: rgb(16 185 129 / 0.2); }
+  /* Selects keep the native menu but draw the app's chevron (give them room with pr-8). */
+  select {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a8a29e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.625rem center;
+    background-size: 14px;
+  }
 }
+
+/* The date pill opens the browser's picker from anywhere on it, not only from its small icon,
+   which would sit next to the pill's own calendar icon. */
+.date-pill input::-webkit-calendar-picker-indicator {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Scrollbars: thin and quiet in both themes */
+* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--fg) 16%, transparent) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--fg) 16%, transparent);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--fg) 28%, transparent); }
 
 /* GFM footnotes: a quieter block at the end of the page */
 .prose-preview .footnotes {
   margin-top: 3rem;
   padding-top: 0.75rem;
-  border-top: 1px solid #e7e5e4;
+  border-top: 1px solid var(--line);
   font-size: 14px;
-  color: #78716c;
+  color: var(--fg-muted);
 }
 .prose-preview sup a { text-decoration: none; padding: 0 1px; }
 
@@ -43,28 +187,31 @@ body {
   height: 1.05em;
   margin: 0 0.5rem 0 0;
   vertical-align: -0.15em;
-  border: 1.5px solid #d6d3d1; /* stone-300 */
+  border: 1.5px solid var(--line-strong);
   border-radius: 0.3em;
-  background: #fff;
+  background: var(--surface);
 }
 .prose-preview .task-list-item input:checked {
-  border-color: #059669; /* emerald-600 */
-  background: #059669 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-7'/%3E%3C/svg%3E") center / 80% no-repeat;
+  border-color: var(--accent);
+  background: var(--accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-7'/%3E%3C/svg%3E") center / 80% no-repeat;
 }
 
 /* Hugo shortcodes ({{< … >}}) only render on the Hugo site; the wiki shows each as a chip. */
 .prose-preview .hugo-shortcode {
   display: inline-block;
   padding: 0 0.4rem;
-  border: 1px dashed #c4b5fd; /* violet-300 */
-  border-radius: 0.25rem;
-  background: #f5f3ff; /* violet-50 */
-  color: #6d28d9; /* violet-700 */
+  border: 1px dashed rgb(139 92 246 / 0.45);
+  border-radius: 0.375rem;
+  background: rgb(139 92 246 / 0.08);
+  color: #6d28d9;
   font-family: var(--font-mono);
   font-size: 0.8em;
   line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-all;
+}
+@media screen {
+  .dark .prose-preview .hugo-shortcode { color: #c4b5fd; }
 }
 
 /* Wide display math scrolls instead of widening the page. */
@@ -78,12 +225,12 @@ body {
    fallback alike), numbered with a CSS counter so copying the code leaves the numbers out. */
 .code-block pre {
   margin: 0;
-  padding: 0.75rem 1rem 0.75rem 0;
+  padding: 0.875rem 1rem 0.875rem 0;
   overflow-x: auto;
   background: transparent !important; /* Shiki inlines the theme background */
   font-family: var(--font-mono);
   font-size: 13.5px;
-  line-height: 1.65;
+  line-height: 1.7;
   counter-reset: line;
 }
 .code-block .line::before {
@@ -93,30 +240,78 @@ body {
   width: 2.75rem;
   padding-right: 1rem;
   text-align: right;
-  color: #d6d3d1;
+  color: var(--fg-subtle);
+  opacity: 0.6;
   user-select: none;
 }
-
-/* md-editor-rt in gitwiki's colours. It fills the height left below the title (Editor lays that
-   out) and scrolls inside, so its toolbar stays in view on long pages. Two classes: its own
-   `.md-editor` rule (variables + a fixed 500px height) loads later with the editor chunk. */
-.gitwiki-md.md-editor {
-  --md-color: #44403c;
-  --md-hover-color: #1c1917;
-  --md-bk-color: #fff;
-  --md-bk-color-outstand: #fafaf9;
-  --md-bk-hover-color: #f5f5f4;
-  --md-border-color: #e7e5e4;
-  --md-border-hover-color: #d6d3d1;
-  --md-border-active-color: #059669;
-  --md-modal-mask: rgb(28 25 23 / 0.25);
-  --md-scrollbar-bg-color: transparent;
-  --md-scrollbar-thumb-color: rgb(0 0 0 / 0.12);
-  --md-scrollbar-thumb-hover-color: rgb(0 0 0 / 0.22);
-  --md-scrollbar-thumb-active-color: rgb(0 0 0 / 0.3);
-  height: 100%;
-  border-radius: 0.5rem;
+/* Shiki renders both themes into CSS variables (see lib/highlight); pick one. */
+.code-block .shiki, .code-block .shiki span { color: var(--shiki-light); }
+@media screen {
+  .dark .code-block .shiki, .dark .code-block .shiki span { color: var(--shiki-dark); }
 }
+
+/* md-editor-rt in gitwiki's colours, for the editor and its dialogs (insert link, crop image).
+   It fills the height left below the title (Editor lays that out) and scrolls inside; its toolbar
+   floats as a bar above the text. The extra :root outranks its own `.md-editor[data-theme=dark]`
+   variables, which load later with the editor chunk. */
+:root .gitwiki-md.md-editor,
+:root .md-editor-modal-container {
+  --md-color: var(--fg-2);
+  --md-hover-color: var(--fg);
+  --md-bk-color: var(--raised);
+  --md-bk-color-outstand: var(--subtle);
+  --md-bk-hover-color: var(--subtle);
+  --md-border-color: var(--line);
+  --md-border-hover-color: var(--line-strong);
+  --md-border-active-color: var(--accent);
+  --md-modal-mask: rgb(12 10 9 / 0.4);
+  --md-modal-shadow: var(--pop-shadow);
+  --md-scrollbar-bg-color: transparent;
+  --md-scrollbar-thumb-color: color-mix(in srgb, var(--fg) 16%, transparent);
+  --md-scrollbar-thumb-hover-color: color-mix(in srgb, var(--fg) 28%, transparent);
+  --md-scrollbar-thumb-active-color: color-mix(in srgb, var(--fg) 34%, transparent);
+}
+/* Two classes: its own `.md-editor` rule (border, a fixed 500px height) loads later. */
+.gitwiki-md.md-editor {
+  height: 100%;
+  border: none;
+  background: transparent;
+}
+.gitwiki-md .md-editor-toolbar-wrapper {
+  margin: 0 0 6px;
+  padding: 4px;
+  border: none;
+  border-radius: 12px;
+  background: var(--raised);
+  box-shadow: 0 0 0 1px var(--line), 0 1px 2px rgb(0 0 0 / 0.04);
+}
+.gitwiki-md .md-editor-toolbar-item {
+  margin-inline: 1px;
+  padding-inline: 2px;
+  border-radius: 8px;
+  color: var(--fg-muted);
+  transition: background-color 0.15s, color 0.15s;
+}
+.gitwiki-md .md-editor-toolbar-item:not([disabled]):hover,
+.gitwiki-md .md-editor-toolbar-active {
+  background: var(--shade);
+  color: var(--fg);
+}
+.gitwiki-md .md-editor-divider { background: var(--line-strong); }
+/* Buttons that carry their name (MarkdownEditor's view controls): the name sits beside the icon,
+   so the toolbar stays one row high. */
+.gitwiki-md .md-editor-toolbar-item:has(.gitwiki-tool-label) {
+  flex-direction: row;
+  gap: 1px;
+  padding-right: 8px;
+}
+.gitwiki-tool-label { font-size: 12.5px; white-space: nowrap; }
+.gitwiki-md .md-editor-footer {
+  border: none;
+  color: var(--fg-subtle);
+  font-size: 12px;
+}
+.gitwiki-md .md-editor-content { background: transparent; }
 /* Its stylesheet pins the text to a 14px monospace (`.md-editor .ͼ1 .cm-scroller`); prose should
    read like the page, with code blocks monospace via .cm-codeLine. */
 .gitwiki-md.md-editor .cm-editor .cm-scroller {
@@ -124,10 +319,28 @@ body {
   font-size: 16px;
   line-height: 1.8;
 }
+/* Page width wraps lines where the reading view does (also in full screen): 640px of text, as in
+   the article column, plus the line's own 6px + 16px padding. Wide mode lets them use the
+   editor's whole width. */
+.gitwiki-md .cm-editor .cm-content { max-width: 662px; }
+.gitwiki-md-wide .cm-editor .cm-content { max-width: none; }
 
-/* Phones: no room for the editor's line-number gutter. */
+/* The split preview needs room for two columns (Editor hides the preview below xl as well). */
+@media (max-width: 1279px) {
+  .gitwiki-md .md-editor-toolbar-item:has(.gitwiki-split) { display: none; }
+}
+/* Phones: no room for the editor's line-number gutter or toolbar names, and the editor is full
+   width anyway. */
 @media (max-width: 767px) {
   .cm-gutters { display: none !important; }
+  .gitwiki-md .md-editor-toolbar-item:has(.gitwiki-width) { display: none; }
+  .gitwiki-tool-label { display: none; }
+}
+
+/* Search terms marked in a page opened from the results (see Editor), as in the result list. */
+::highlight(search-hit) { background-color: rgb(253 230 138 / 0.75); color: inherit; }
+@media screen {
+  .dark ::highlight(search-hit) { background-color: rgb(251 191 36 / 0.3); }
 }
 
 /* Remote cursor / selection */
@@ -139,17 +352,8 @@ body {
   100% { opacity: 0.6; }
 }
 
-/* Scrollbar */
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.22); }
-
-::selection { background: rgb(5 150 105 / 0.15); }
-
 @media print {
   /* 打印只要正文：侧栏、顶栏、面板、toast 都不进纸张。 */
-  aside, header, #page-actions, [data-sonner-toaster], div[class*="z-30"] { display: none !important; }
-  main, article { overflow: visible !important; max-height: none !important; }
+  aside, header, #page-actions, [data-sonner-toaster], [role="menu"] { display: none !important; }
   body { background: white; }
 }

@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store";
 import { api } from "../lib/api";
-import { Copy, Download, FileIcon, ImageIcon, Paperclip, Trash2, Upload, X } from "lucide-react";
+import { Copy, Download, FileIcon, ImageIcon, Paperclip, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { attachmentName as displayName } from "../lib/format";
-import { Dialog, btnOutline } from "./ui";
+import { Dialog, DialogHeader, btnSecondary } from "./ui";
 
 const imageName = /\.(png|jpe?g|gif|webp|svg|avif)$/i;
 
@@ -51,14 +51,11 @@ export function AssetsPanel({ body, canWrite, onUpload, onClose }: {
   };
 
   return (
-    <Dialog onClose={onClose} center className="max-w-[600px] max-h-[75vh] flex flex-col">
-      <div className="h-12 shrink-0 px-4 border-b border-stone-200 flex items-center gap-2">
-        <Paperclip className="size-4 text-stone-400" />
-        <div className="text-sm font-medium text-stone-900">附件</div>
-        {assets && <div className="text-xs text-stone-400">{assets.length} 个</div>}
+    <Dialog onClose={onClose} center className="max-w-[640px] max-h-[75vh] flex flex-col">
+      <DialogHeader icon={Paperclip} title="附件" meta={assets && `${assets.length} 个`} onClose={onClose}>
         {canWrite && (
           <>
-            <button onClick={() => input.current?.click()} className={`${btnOutline} ml-auto`}>
+            <button onClick={() => input.current?.click()} className={btnSecondary}>
               <Upload className="size-3.5" />上传
             </button>
             <input
@@ -70,21 +67,20 @@ export function AssetsPanel({ body, canWrite, onUpload, onClose }: {
             />
           </>
         )}
-        <button onClick={onClose} title="关闭" className={`${canWrite ? "" : "ml-auto "}p-1 rounded text-stone-400 hover:text-stone-600 hover:bg-stone-100`}>
-          <X className="size-4" />
-        </button>
-      </div>
-      <div className="flex-1 overflow-auto p-3">
-        {assets === null && <div className="py-8 text-center text-xs text-stone-400">加载中…</div>}
+      </DialogHeader>
+      <div className="flex-1 overflow-auto p-4">
+        {assets === null && <div className="py-8 text-center text-xs text-fg-muted">加载中…</div>}
         {assets?.length === 0 && (
-          <div className="py-12 text-center text-xs text-stone-400 space-y-2">
-            <ImageIcon className="size-8 mx-auto text-stone-300" />
-            <div>本页还没有附件</div>
-            {canWrite && <div>在编辑器里粘贴图片，或用工具栏的回形针上传任意文件</div>}
+          <div className="py-12 text-center">
+            <div className="mx-auto flex size-12 items-center justify-center rounded-2xl bg-subtle ring-1 ring-line">
+              <ImageIcon className="size-5 text-fg-subtle" />
+            </div>
+            <p className="mt-3 text-sm font-medium text-fg">本页还没有附件</p>
+            {canWrite && <p className="mt-1 text-xs text-fg-muted">在编辑器里粘贴图片，或用工具栏的回形针上传任意文件</p>}
           </div>
         )}
         {!!assets?.length && (
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             {assets.map(name => (
               <AssetCard
                 key={name}
@@ -106,39 +102,39 @@ function AssetCard({ url, name: stored, onCopy, onDelete }: { url: string; name:
   const [showPreview, setShowPreview] = useState(false);
   const name = displayName(stored);
   const ext = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toUpperCase() : "FILE";
-  const iconBtn = "p-1 rounded text-stone-400 transition";
+  const action = "p-1 rounded-md text-fg-subtle transition-colors hover:bg-shade";
 
   return (
     <>
-      <div className="group relative rounded-md border border-stone-200 overflow-hidden bg-stone-50 hover:border-stone-300 transition">
+      <div className="group overflow-hidden rounded-xl bg-subtle ring-1 ring-line transition hover:ring-line-strong">
         {isImage ? (
           <button onClick={() => setShowPreview(true)} className="block w-full aspect-square overflow-hidden" title="查看大图">
-            <img src={url} alt={name} className="w-full h-full object-cover" loading="lazy" />
+            <img src={url} alt={name} className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03]" loading="lazy" />
           </button>
         ) : (
-          <a href={url} download={name} className="w-full aspect-square flex flex-col items-center justify-center gap-2 text-stone-400 hover:text-stone-600" title="下载">
+          <a href={url} download={name} className="w-full aspect-square flex flex-col items-center justify-center gap-2 text-fg-subtle transition-colors hover:text-fg-muted" title="下载">
             <FileIcon className="size-8" />
             <span className="text-[11px] font-semibold tracking-wide">{ext}</span>
           </a>
         )}
-        <div className="p-1.5 pl-2 bg-white border-t border-stone-100 flex items-center gap-0.5">
-          <span className="text-[11px] text-stone-600 truncate flex-1" title={name}>{name}</span>
-          <button onClick={onCopy} title="复制引用" className={`${iconBtn} hover:text-emerald-600 hover:bg-emerald-50`}>
-            <Copy className="size-3" />
+        <div className="flex items-center gap-0.5 border-t border-line bg-raised p-1.5 pl-2.5">
+          <span className="flex-1 truncate text-xs text-fg-2" title={name}>{name}</span>
+          <button onClick={onCopy} title="复制引用" className={`${action} hover:text-accent-strong`}>
+            <Copy className="size-3.5" />
           </button>
-          <a href={url} download={name} title="下载" className={`${iconBtn} hover:text-stone-700 hover:bg-stone-100`}>
-            <Download className="size-3" />
+          <a href={url} download={name} title="下载" className={`${action} hover:text-fg`}>
+            <Download className="size-3.5" />
           </a>
           {onDelete && (
-            <button onClick={onDelete} title="删除" className={`${iconBtn} hover:text-red-600 hover:bg-red-50`}>
-              <Trash2 className="size-3" />
+            <button onClick={onDelete} title="删除" className={`${action} hover:text-red-600`}>
+              <Trash2 className="size-3.5" />
             </button>
           )}
         </div>
       </div>
       {showPreview && (
-        <div className="fixed inset-0 bg-stone-950/80 z-50 flex items-center justify-center p-8" onClick={() => setShowPreview(false)}>
-          <img src={url} alt={name} className="max-w-full max-h-full object-contain rounded shadow-2xl" />
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/85 p-8 backdrop-blur-sm animate-fade-in" onClick={() => setShowPreview(false)}>
+          <img src={url} alt={name} className="max-w-full max-h-full object-contain rounded-lg shadow-2xl" />
         </div>
       )}
     </>

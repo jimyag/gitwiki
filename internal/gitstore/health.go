@@ -8,19 +8,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type HealthPage struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
-	File  string `json:"file"`
-	Body  string `json:"body"`
-	Meta  Meta   `json:"meta"`
+	ID      string    `json:"id"`
+	Title   string    `json:"title"`
+	File    string    `json:"file"`
+	Body    string    `json:"body"`
+	Meta    Meta      `json:"meta"`
+	Updated time.Time `json:"updated,omitzero"` // last commit; only when stale pages are checked
 }
 
 type HealthSnapshot struct {
-	Pages []HealthPage `json:"pages"`
-	Files []string     `json:"files"`
+	Pages     []HealthPage `json:"pages"`
+	Files     []string     `json:"files"`
+	StaleDays int          `json:"stale_days"` // pages updated longer ago are stale; 0: not checked
 }
 
 // HealthSnapshot reads one consistent snapshot. Markdown analysis uses the browser's
@@ -35,7 +38,13 @@ func (r *Repo) HealthSnapshot(ctx context.Context) (_ *HealthSnapshot, retErr er
 		return nil, err
 	}
 	defer func() { retErr = errors.Join(retErr, root.Close()) }()
-	out := &HealthSnapshot{Pages: []HealthPage{}, Files: []string{}}
+	out := &HealthSnapshot{Pages: []HealthPage{}, Files: []string{}, StaleDays: *r.Settings().StaleDays}
+	var updated map[string]time.Time
+	if out.StaleDays > 0 {
+		if updated, err = r.lastCommits(ctx); err != nil {
+			return nil, err
+		}
+	}
 	err = filepath.WalkDir(rootPath, func(abs string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -75,7 +84,7 @@ func (r *Repo) HealthSnapshot(ctx context.Context) (_ *HealthSnapshot, retErr er
 		}
 		doc, _ := ParsePage(data)
 		id := pageIDForPath(rel)
-		out.Pages = append(out.Pages, HealthPage{ID: id, Title: pageTitle(doc, id), File: rel, Body: doc.Body, Meta: MetaOf(doc.FrontMatter)})
+		out.Pages = append(out.Pages, HealthPage{ID: id, Title: pageTitle(doc, id), File: rel, Body: doc.Body, Meta: MetaOf(doc.FrontMatter), Updated: updated[abs]})
 		return nil
 	})
 	return out, err

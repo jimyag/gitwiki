@@ -1,3 +1,5 @@
+import { pathFor } from "./route";
+
 const jsonHeaders = { "Content-Type": "application/json" };
 
 // The GitHub login, coming back to the page that was open.
@@ -53,14 +55,21 @@ export interface SyncStatus {
   last_pull?: string; pending: number; running: boolean; queued: boolean;
   pull_error?: string; push_error?: string;
 }
-// can_write: the user may push to the GitHub repo; without it the wiki is read-only for them.
-export interface Repo { slug: string; title: string; can_write: boolean; site_url?: string; source?: string[] }
+// A wiki: a GitHub repo the App is installed on, slug "owner/repo". can_write: the user may push
+// to it; without it the wiki is read-only for them.
+export interface Repo { slug: string; title: string; can_write: boolean }
+// The wiki's own settings, from .gitwiki/config.yaml in its repo (defaults filled in).
+export interface Settings { title: string; read_public: boolean; site_url?: string; source?: string[]; stale_days: number }
 export interface PageMeta {
   id: string; title: string; is_dir: boolean; has_body: boolean;
   tags?: string[]; draft?: boolean; deprecated?: boolean; children?: PageMeta[];
 }
-// Front matter fields the properties panel edits.
-export interface Meta { tags: string[]; draft: boolean; description: string; date: string; deprecated?: boolean; replaced_by?: string }
+// Front matter fields the properties panel edits. owner: GitHub login of who keeps the page up
+// to date; reviewed: the day they last confirmed it as still right without changing it.
+export interface Meta {
+  tags: string[]; draft: boolean; description: string; date: string; deprecated?: boolean; replaced_by?: string;
+  owner?: string; reviewed?: string;
+}
 export interface PageContent {
   id: string; title: string; body: string; meta: Meta; base_sha: string; is_bundle: boolean;
   last_author?: string; last_commit_sha?: string; last_commit_at?: string;
@@ -84,8 +93,9 @@ export interface Change {
 export interface PageRef { id: string; title: string }
 export interface SearchHit { page_id: string; title: string; snippet: string; terms: string[]; deprecated?: boolean }
 export interface PageTemplate { id: string; title: string; description: string; body: string }
-export interface HealthPage { id: string; title: string; file: string; body: string; meta: Meta }
-export interface HealthSnapshot { pages: HealthPage[]; files: string[] }
+// updated: the last commit, sent while stale pages are checked (stale_days > 0).
+export interface HealthPage { id: string; title: string; file: string; body: string; meta: Meta; updated?: string }
+export interface HealthSnapshot { pages: HealthPage[]; files: string[]; stale_days?: number }
 export interface SearchFilters { directory?: string; tag?: string; draft?: string; updated_after?: string }
 export interface AssetUpload { path: string }
 export interface CommentAnchor {
@@ -100,6 +110,7 @@ export const api = {
   me: () => req<{ user: User | null; repos?: Repo[] }>("/api/me"),
   syncStatus: (slug: string) => req<SyncStatus>(`/api/repos/${slug}/sync`),
   syncNow: (slug: string) => req<SyncStatus>(`/api/repos/${slug}/sync`, post({})),
+  settings: (slug: string) => req<Settings>(`/api/repos/${slug}/settings`),
   pageTree: (slug: string) => req<PageMeta>(`/api/repos/${slug}/pages`),
   templates: (slug: string) => req<PageTemplate[]>(`/api/repos/${slug}/templates`),
   health: (slug: string) => req<HealthSnapshot>(`/api/repos/${slug}/health`),
@@ -121,6 +132,10 @@ export const api = {
     req<{ id: string }>(`/api/repos/${slug}/restore`, post({ id, sha })),
   reorderPages: (slug: string, parentId: string, orderedIds: string[]) =>
     req<{ status: string }>(`/api/repos/${slug}/order`, post({ parent_id: parentId, ordered_ids: orderedIds })),
+  // Renames tag from to to on every page that has it (to "": removes it); with pages, adds
+  // (from "") or removes it on those pages only. Resolves to the pages changed.
+  retag: (slug: string, from: string, to: string, pages?: string[]) =>
+    req<{ pages: string[] }>(`/api/repos/${slug}/tags`, post({ from, to, pages })),
   retitlePage: (slug: string, id: string, title: string) =>
     req<{ id: string; commit_sha: string }>(`/api/repos/${slug}/page`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ id, title }) }),
   history: (slug: string, id: string) => req<Revision[]>(`/api/repos/${slug}/history?id=${q(id)}`),
@@ -149,8 +164,9 @@ export const api = {
   },
   copyPage: (slug: string, id: string, parentId?: string) =>
     req<{ id: string }>(`/api/repos/${slug}/copy`, post({ id, parent_id: parentId ?? "" })),
-  // Link the user can share; the SPA server maps `GET /{slug}/{page}.md` to this API.
-  mdUrl: (slug: string, id: string) => `/${encodeURIComponent(slug)}/${id === "_index" ? "" : id.split("/").map(encodeURIComponent).join("/")}.md`.replace(/\/+/, "/"),
+  // Link the user can share: /owner/repo/page.md (/owner/repo.md for the home page), which the
+  // server answers with the page's source.
+  mdUrl: (slug: string, id: string) => pathFor(slug, id) + ".md",
   listAssets: (slug: string, pageId: string) =>
     req<string[]>(`/api/repos/${slug}/assets?page_id=${q(pageId)}`),
   deleteAsset: (slug: string, pageId: string, name: string) =>

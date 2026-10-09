@@ -54,7 +54,7 @@ type outbound struct {
 	Head   int    `json:"head,omitempty"`   // selection head (== anchor if no selection)
 	Color  string `json:"color,omitempty"`  // server-assigned stable color for the user
 
-	Error string `json:"error,omitempty"` // "sync": why pushing to origin failed; empty once it works
+	Error string `json:"error,omitempty"` // "sync": why pushing to or pulling from origin failed; empty once both work
 }
 
 type Hub struct {
@@ -160,7 +160,7 @@ func (h *Hub) BroadcastMoved(repo, user, from, to string) {
 	h.broadcastRepo(repo, outbound{Type: "moved", User: user, From: from, To: to})
 }
 
-// BroadcastSync tells everyone on any page of repo whether the last push to origin worked.
+// BroadcastSync tells everyone on any page of repo whether syncing with origin works.
 func (h *Hub) BroadcastSync(repo string, err error) {
 	msg := outbound{Type: "sync"}
 	if err != nil {

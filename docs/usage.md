@@ -18,7 +18,7 @@ git --version
 
 Git 是运行时依赖。即使使用预编译的二进制，也必须保留 Git。Go 和 Bun 只用于构建，运行服务器可以不安装它们。
 
-在 GitHub 创建一个专门存文档的仓库，例如 `OWNER/wiki-content`。勾选「Add a README file」，确保仓库有首次提交，并确认默认分支名为 `main`。完全空的 GitHub 仓库没有 `main` 分支，gitwiki 的首次克隆会失败。
+在 GitHub 创建一个专门存文档的仓库，例如 `OWNER/wiki-content`。勾选「Add a README file」，确保仓库有首次提交。完全空的仓库没有分支，gitwiki 的首次克隆会失败。也可以把文档放在已有代码仓库的 `wiki` 分支：仓库有名为 `wiki` 的分支时，gitwiki 用这个分支，否则用默认分支。下文的 `main` 指 Wiki 所在的分支。
 
 在 GitHub 网页中创建 `content/_index.md`，内容如下，并提交到 `main`：
 
@@ -32,7 +32,9 @@ title: 团队 Wiki
 
 这会同时建立首页和内容目录。只有 README 的仓库也能克隆，但没有上述文件时首页读取会返回 404。
 
-为编辑者授予文档仓库的 Write 或更高权限。gitwiki 按 GitHub 的 pull / push 权限判断读写能力；有仓库读取权限的人可以阅读，具有 push 权限的人可以修改。分支保护规则仍可能阻止后台直接 push，因此选用允许这些编辑者直接推送的文档分支。
+为编辑者授予文档仓库的 Write 或更高权限。gitwiki 按 GitHub 的 pull / push 权限判断读写能力；有仓库读取权限的人可以阅读，具有 push 权限的人可以修改。后台推送以 GitHub App 的身份进行，分支保护规则需要允许这个 App 推送。
+
+gitwiki 不在服务配置里登记仓库：后文注册的 GitHub App 装到哪个仓库，哪个仓库就是一个 Wiki，地址是 `https://wiki.example.com/OWNER/wiki-content`。每个 Wiki 自己的设置写在仓库里，见「Wiki 设置」。
 
 ## 下载程序
 
@@ -55,7 +57,7 @@ mv gitwiki_linux_amd64 gitwiki
 
 `uname -m` 为 `x86_64` 时使用上述文件，为 `aarch64` 时将命令中的 `gitwiki_linux_amd64` 改为 `gitwiki_linux_arm64`。校验应显示下载的文件 `OK`，帮助输出应包含 `-config`；失败时停止安装。macOS 的文件名以 `darwin` 开头，Windows 文件名带 `.exe`。
 
-后续安装命令在此目录执行。需要自己构建时，使用下一节；下载二进制后可以直接跳到「注册 GitHub OAuth App」。
+后续安装命令在此目录执行。需要自己构建时，使用下一节；下载二进制后可以直接跳到「注册 GitHub App」。
 
 ## 从源码构建
 
@@ -87,19 +89,27 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o git
 
 将生成的 Linux 二进制传到运行服务器。后续安装命令假定在服务器上执行，且当前目录中已有适用于该服务器的 `gitwiki`；交叉构建的文件需要先改名。
 
-## 注册 GitHub OAuth App
+## 注册 GitHub App
 
-在 [GitHub Developer settings](https://github.com/settings/developers) 的 OAuth Apps 中创建应用，不能用 GitHub App 的配置替代：
+gitwiki 只用一个 GitHub App：用户从它登录，服务以它的身份克隆、拉取和推送文档仓库。OAuth App 没有自己的仓库权限，不能替代。在 [GitHub Developer settings](https://github.com/settings/apps/new) 的 GitHub Apps 中创建（组织的仓库在组织的 Settings → Developer settings 中创建）：
 
-- Application name：例如 `Team GitWiki`。
+- GitHub App name：全 GitHub 唯一，例如 `team-gitwiki`。
 - Homepage URL：`https://wiki.example.com`。
-- Authorization callback URL：`https://wiki.example.com/auth/callback`。
+- Callback URL：`https://wiki.example.com/auth/callback`。最多可填 10 个，本地调试的地址可以一并加上。
+- Webhook：取消勾选 Active，gitwiki 不接收 Webhook。
+- Repository permissions：Contents 选 Read and write（Metadata 只读会自动加上），其他保持 No access。
+- Where can this GitHub App be installed：Only on this account。
 
-记录 Client ID，生成 Client secret，稍后填入配置。若创建界面启用了「Expire user access tokens」，关闭该选项：当前代码没有刷新短期 access token 的流程。[GitHub 官方创建说明](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app) 也要求未支持短期 token 的应用关闭此选项。
+创建后在 App 设置页：
 
-本地登录调试使用 `http://localhost:8080` 和 `http://localhost:8080/auth/callback`。浏览器访问地址、协议、端口和回调必须对应；不要混用 `localhost` 与 `127.0.0.1`，否则 OAuth state cookie 可能无法带回。
+1. 记录 Client ID，生成 Client secret，稍后填入配置。
+2. 生成 Private key，下载的 `.pem` 文件放到服务器上，只给服务用户读。
+3. 左侧 Optional features 中把 User-to-server token expiration 设为 Opt-out。当前代码没有刷新短期用户 token 的流程，不关闭时用户 token 8 小时后过期，需要重新登录。
+4. 左侧 Install App，把 App 安装到文档仓库（Only select repositories）。装到哪个仓库，哪个仓库就是一个 Wiki，地址是 `/<owner>/<repo>`；以后增加 Wiki 只需把 App 装到新仓库，不用改服务配置或重启。没有安装的仓库，服务无法克隆和推送，用户登录后也看不到。
 
-登录请求的 scope 是 `repo user:email`。组织如果限制第三方 OAuth App，需由组织管理员批准应用访问，单纯拥有仓库 Write 权限还不够。
+本地登录调试使用 `http://localhost:8080` 和 `http://localhost:8080/auth/callback`。浏览器访问地址、协议、端口和回调必须对应；不要混用 `localhost` 与 `127.0.0.1`，否则登录的 state cookie 可能无法带回。
+
+GitHub App 的权限来自注册时的设置，与登录参数无关；用户登录拿到的 token 只能访问“App 装了并且用户本人有权限”的仓库。组织的仓库需要组织所有者安装 App。
 
 ## 安装和配置
 
@@ -121,37 +131,44 @@ listen: "127.0.0.1:8080"
 github:
   client_id: "填入 Client ID"
   client_secret: "填入 Client secret"
+  private_key_file: /etc/gitwiki/github-app.pem
 
 session_secret: "填入生成的随机字符串"
 
-repos:
-  - slug: team
-    github: OWNER/wiki-content
-    branch: main
-    workdir: /var/lib/gitwiki/repos/team
-    content_dir: content
-    title: 团队 Wiki
-    read_public: false
-    source: [markdown, mediawiki]
-    # site_url: https://docs.example.com
+data_dir: /var/lib/gitwiki/repos
 ```
 
 设置文件权限：
 
 ```bash
+sudo install -m 640 -o root -g gitwiki 下载的私钥.pem /etc/gitwiki/github-app.pem
 sudo chown root:gitwiki /etc/gitwiki/config.yaml
 sudo chmod 640 /etc/gitwiki/config.yaml
 ```
 
-`slug` 是访问路径中的短名，必须唯一，建议仅使用字母、数字和连字符。`github` 使用 `owner/repo`，不是完整 URL；`branch` 必须已经存在。`workdir` 是服务独占的 Git 工作副本，不要指向自己的开发目录，也不要让多个服务进程共用同一工作副本。
+服务配置里没有仓库列表。`data_dir` 存放各 Wiki 的工作副本，路径是 `<data_dir>/<owner>/<repo>`，省略时为 `./data/repos`（相对于进程的工作目录）。工作副本由服务独占，不要指向自己的开发目录，也不要让多个服务进程共用同一个 `data_dir`。修改服务配置后需要重启进程。
 
-`content_dir` 相对于工作副本，默认 `content`；不设置 `branch` 时默认 `main`。`source` 可省略；设置后允许导入列出的 `markdown`、`mediawiki` 格式。`site_url` 只提供「在站点中查看」链接，不会启动发布任务。修改配置后需要重启进程。
-
-`read_public: true` 会公开整个 Wiki 的读取接口，包括历史、评论、附件和草稿页面；`draft: true` 只影响 Hugo 发布，不会隐藏 gitwiki 中的页面。私有仓库开启公开阅读时，先由有读取权限的账号登录并打开该 Wiki，完成首次克隆，然后再做匿名访问验收。全新的工作副本没有访问私有仓库的凭据，匿名首次访问会返回 `clone failed`。
-
-配置和工作副本都按凭据文件保护：会话 cookie 含有签名但未加密的 GitHub token，克隆和推送还会将 token 写入工作副本的 Git remote URL。不要公开 `.git/config`，也不要把 `git remote -v` 的原始输出发到日志或问题单。保持 `session_secret` 稳定；重启本身不会使现有 cookie 失效，更换 secret 才会使已有会话失效。
+配置、私钥和工作副本都按凭据文件保护：私钥能以 App 身份读写所有安装了它的仓库；会话 cookie 含有签名但未加密的用户 token；克隆和推送会把 App 的安装 token（1 小时有效、只限当前仓库）写入工作副本的 Git remote URL。不要公开 `.git/config`，也不要把 `git remote -v` 的原始输出发到日志或问题单。保持 `session_secret` 稳定；重启本身不会使现有 cookie 失效，更换 secret 才会使已有会话失效。私钥泄露时，在 App 设置页删除旧私钥并生成新的。
 
 登录 cookie 有效期为 7 天，仓库权限按账号、仓库和凭据缓存 5 分钟。新登录凭据会立即重新检查权限。如果 GitHub 返回 401，gitwiki 会清除本地登录 cookie：刷新根路径后显示登录页，私有 Wiki 的读取及写入接口返回 401，公开 Wiki 仍可匿名阅读。重新登录可恢复有效凭据，不会继续使用旧凭据的拒绝结果。
+
+## Wiki 设置
+
+每个 Wiki 自己的设置写在它仓库里的 `.gitwiki/config.yaml`（Wiki 所在分支上，和页面模板目录 `.gitwiki/templates/` 放在一起）。有这个仓库 push 权限的人就能改，改动随普通提交生效，不用重启服务。文件和其中每一项都可以省略：
+
+```yaml
+title: 团队 Wiki                # 侧栏显示的名称，默认是仓库名
+read_public: false             # true：不登录也能阅读；写始终要求有 push 权限的 GitHub 账号
+source: [markdown, mediawiki]  # 侧栏出现“导入”按钮，允许导入列出的格式；省略则没有导入入口
+site_url: https://docs.example.com   # 发布的站点，页面上出现“在站点中查看”；默认取仓库在 GitHub 上填的 Website
+stale_days: 180                # 页面多少天没有更新就列入“文档问题”，默认 180，0 关闭
+```
+
+`read_public: true` 会公开整个 Wiki 的读取接口，包括历史、评论、附件和草稿页面；`draft: true` 只影响 Hugo 发布，不会隐藏 gitwiki 中的页面。私有仓库开启公开阅读时，服务用 App 的安装 token 克隆，不需要先有人登录。是否公开由有仓库写权限的人决定，部署方无法统一关闭。
+
+`site_url` 只提供「在站点中查看」链接，不会启动发布任务。文件格式写错时，服务写一条日志并按默认值处理，不会中断阅读。
+
+Wiki 的内容固定放在仓库的 `content/` 目录下。仓库有名为 `wiki` 的分支时 Wiki 用这个分支，否则用默认分支；服务已经为某个仓库建过工作副本后，会一直沿用工作副本当前的分支。之后新建或删除 `wiki` 分支，需要在推送完待推送提交后删除这个工作副本，服务才会重新判断分支。
 
 ## 验证本机启动
 
@@ -251,28 +268,38 @@ Nginx 必须显式转发 WebSocket 的 Upgrade 和 Connection 头；其默认空
 
 当前会话 cookie 没有 `Secure` 标记。HTTP 跳转不能阻止 cookie 随第一个 HTTP 请求发出，这是当前版本的安全缺口；开放公网登录前应补上安全 cookie 配置。下面的 HTTPS 命令不代表该缺口已经修复。
 
-用根路径提供服务，例如 `https://wiki.example.com/team`。当前前端和 API 使用绝对路径，不要部署到 `/gitwiki/` 子路径。gitwiki 不依赖 Vite 开发服务器；正式环境只需要二进制、配置、Git 和工作副本。
+用根路径提供服务，Wiki 地址形如 `https://wiki.example.com/OWNER/wiki-content`。当前前端和 API 使用绝对路径，不要部署到 `/gitwiki/` 子路径。gitwiki 不依赖 Vite 开发服务器；正式环境只需要二进制、配置、Git 和工作副本。
 
 ## 第一次登录和写作
 
-1. 打开 `https://wiki.example.com/team`，点击 GitHub 登录。授权后应回到 Wiki，显示自己的账号。私有仓库首次打开时会克隆，等待页面树和首页出现。
+1. 打开 `https://wiki.example.com/OWNER/wiki-content`，点击 GitHub 登录。授权后应回到 Wiki，显示自己的账号，侧栏的 Wiki 列表里有这个仓库。仓库首次打开时会克隆，等待页面树和首页出现。
 2. 使用有 push 权限的账号新建「部署验收」页面。进入编辑模式，输入一个标题、一段正文和一条列表，点击保存。刷新页面，确认正文仍在。
 3. 在 GitHub 查看文档仓库的目标分支，确认新增了页面文件和对应提交。界面「已保存」表示本地 commit 完成，不能单独证明 GitHub 已收到提交。
-4. 在页面下新建子页面，上传一张小图片，保存并刷新，确认子页面、图片和附件链接可打开。服务会自动安排页面和附件的存储位置。
+4. 在页面下新建子页面，上传一张小图片，保存并刷新，确认子页面、图片和附件链接可打开，父页面正文后列出了这个子页面。页面文件按标题命名，例如「部署验收」存为 `content/部署验收.md`，有子页面后变成 `content/部署验收/_index.md`；附件放在页面目录的 `assets/` 下。
 5. 添加评论并使用界面的保存操作，然后刷新确认评论仍在。只暂存在服务内存中的评论会在重启后丢失。
 6. 搜索正文中的关键字，打开搜索结果；打开页面历史，确认能查看刚才的版本。需要删除测试页面时，可从回收站恢复。
 
-导入入口需要配置 `source`，支持导入 `.md` 和 `.wiki`。页面 URL 后加 `.md` 显示带标题的 Markdown 正文，不是包含所有 front matter 的原始文件；加 `.pdf` 返回 HTML 打印页，通过浏览器另存为 PDF，不是服务端生成的 PDF 文件。
+导入入口需要在 Wiki 设置中配置 `source`，支持导入 `.md` 和 `.wiki`。页面 URL 后加 `.md` 显示带标题的 Markdown 正文，不是包含所有 front matter 的原始文件；加 `.pdf` 返回 HTML 打印页，通过浏览器另存为 PDF，不是服务端生成的 PDF 文件。
 
 页面草稿保存在当前浏览器，不能当作服务器备份。多人编辑在保存时做三方合并；同一处出现冲突时，需在界面对比处理。
 
-搜索同时匹配标题、正文和页面路径，标题命中优先；空格分开的多个关键词需要全部匹配。可组合目录（含子页面）、标签、最近 7 / 30 / 90 天更新、草稿 / 非草稿筛选，也可不输入关键词直接筛选，最多显示 50 个匹配页面。这里的草稿状态指页面属性中的草稿标记，与浏览器未保存的修改不同。
+按 ⌘K（Windows / Linux 为 Ctrl K）、`/` 或点侧栏的搜索框打开搜索，未输入关键词时先列出本机最近看过的页面。搜索同时匹配标题、正文和页面路径，标题命中优先；空格分开的多个关键词需要全部匹配。可组合目录（含子页面）、标签、最近 7 / 30 / 90 天更新、草稿 / 非草稿筛选，也可不输入关键词直接筛选，最多显示 50 个匹配页面。这里的草稿状态指页面属性中的草稿标记，与浏览器未保存的修改不同。从搜索结果打开页面后，标题和正文里命中的词会标出来，并滚到正文第一处；按 Esc、开始编辑或打开别的页面后标记消失。
 
-页面标题下显示最后更新时间，按浏览器本地时区展示。该时间和搜索中的更新时间均取自最后一次修改页面文件的 Git 提交，不使用 front matter 的发布日期；尚未提交的文件不参与更新时间筛选。
+其他快捷键：阅读时按 `E` 进入编辑，按 `?` 查看快捷键列表（账号菜单里的「键盘快捷键」也能打开）；编辑时 ⌘S / Ctrl S 保存。这些单键快捷键在输入框、编辑器和对话框里不生效。
 
-移动页面可在右上角菜单选择「移动到…」，或在侧栏拖到另一页面下面。子页面、附件、已保存评论和待保存评论一起迁移；相关 Markdown 链接、图片、引用式链接、HTML 的 `href` / `src` / `poster`、Hugo 的 `ref` / `relref` 自动更新，锚点和查询参数保留，行内代码与围栏代码示例保持原样。目标已有页面或评论记录、涉及文件有未提交修改时，移动会被拒绝；写入或提交失败会回滚本次改动。
+编辑时在行首输入 `/` 可以插入标题、列表、引用、代码块、表格、五种提示块、Mermaid 图、公式块、分割线和页面链接，继续输入中文名称或英文词（如 `/表格`、`/table`）筛选，回车插入；代码块里的 `/` 不会弹出菜单。编辑器工具栏的「分屏预览」在右侧显示和阅读页一致的渲染，随输入更新，并跟着编辑器滚动；窗口宽度不足 1280 像素时不显示分屏。「全屏」让编辑器和分屏预览一起占满窗口。
 
-保持连接的浏览器会跟到新地址，并更新收藏、最近浏览和本机草稿。其他人移动了正在编辑的页面时，未保存内容会保留为本机草稿，需恢复并检查后再保存。离线设备的本机记录、浏览器书签及其他站点保存的旧地址无法通过实时通知更新，需使用新地址。
+阅读时鼠标停在站内链接上，会显示目标页面的位置、标题、描述（没有描述时显示正文开头）和更新时间。有子页面的页面会在正文后按侧栏顺序列出直接子页面，标出草稿、已废弃和子页面下面的页面数。收藏的页面常驻侧栏「收藏」分组，标题跟着页面重命名更新；收藏只保存在当前浏览器。
+
+页面标题下显示最后更新时间（如“更新于 3 天前”），鼠标悬停显示按浏览器本地时区的完整时间。该时间和搜索中的更新时间均取自最后一次修改页面文件的 Git 提交，不使用 front matter 的发布日期；尚未提交的文件不参与更新时间筛选。
+
+移动页面可在右上角菜单选择「移动到…」，或在侧栏拖到另一页面的中间，成为它的子页面。拖到某一行的上边缘或下边缘，会放在那个页面的前面或后面：同一目录内只调整顺序，不需要确认；换目录时先确认移动，再排到指定位置。子页面、附件、已保存评论和待保存评论一起迁移；相关 Markdown 链接、图片、引用式链接、HTML 的 `href` / `src` / `poster`、Hugo 的 `ref` / `relref` 自动更新，锚点和查询参数保留，行内代码与围栏代码示例保持原样。目标已有页面或评论记录、涉及文件有未提交修改时，移动会被拒绝；写入或提交失败会回滚本次改动。
+
+每个被移动的页面（包括子页面）会把旧地址写进 front matter 的 `aliases`，Hugo 发布时生成跳转页，外部书签和别人转发的旧站点链接仍能打开；移回原处时会去掉与当前地址相同的条目。设置了 `url` 的页面地址不随位置变化，不写 `aliases`。地址按 Hugo 默认规则（目录路径加 `/`）计算，站点改了 `permalinks` 或页面用了 `slug` 时，跳转地址可能对不上。
+
+保持连接的浏览器会跟到新地址，并更新收藏、最近浏览和本机草稿。其他人移动了正在编辑的页面时，未保存内容会保留为本机草稿，需恢复并检查后再保存。离线设备的本机记录和浏览器书签里 gitwiki 自己的旧地址无法通过实时通知更新，需使用新地址。
+
+页面文件按创建时的标题命名，规则见 README 的「实现说明」。之后在「重命名」里改标题只改 front matter 的 `title`，文件名和页面地址都不变；需要新文件名时，新建页面后把内容移过去。
 
 ## 文档健康、废弃状态和模板
 
@@ -280,17 +307,23 @@ Nginx 必须显式转发 WebSocket 的 Upgrade 和 Connection 头；其默认空
 
 编辑页面时勾选「已废弃」，可选择一个替代页面；保存后正文顶部出现提示，搜索结果也会显示「已废弃」。取消勾选会同时清除替代页面。该标记不会删除正文或隐藏页面，也不会自动修改 Hugo 主题的展示。替代页面移动时引用一起更新；删除后，原页面提示替代页面不存在，健康检查会列出该问题。
 
-模板放在文档仓库根目录的 `.gitwiki/templates/`，与 `content_dir` 平级或独立，读取该目录下直接存放的 `.md` 文件。例如：
+编辑时在属性栏的「负责人」里填 GitHub 用户名，保存后阅读页显示负责人，写入 front matter 的 `owner`。最后一次修改页面文件的提交早于 Wiki 设置的 `stale_days` 天（默认 180）时，页面以「长期未更新」列入「文档问题」，显示负责人（或「未指定负责人」）和最后更新日期；草稿和已废弃页面不列入。点问题打开页面阅读。内容不需要修改时，有编辑权限的人可点「内容仍有效」：写入 front matter 的 `reviewed` 日期并提交，页面随即移出列表，最近更新里显示「确认内容仍然有效」。浅克隆（`--depth 100`）只有最近的提交，更早修改过的文件按可见历史中最早的提交时间计算，可能显得比实际新。
+
+侧栏「标签」列出所有标签。有编辑权限时，选中一个标签后可以「重命名」或「删除标签」，改动作用于所有带这个标签的页面，改成已有的标签名会合并两者；勾选列表里的页面后，可以给这些页面添加另一个标签，或移除当前标签。每次改动是一个提交，页面其他属性和正文不变。
+
+模板放在文档仓库根目录的 `.gitwiki/templates/`，和 Wiki 设置文件放在一起，读取该目录下直接存放的 `.md` 文件。例如：
 
 ```text
 文档仓库/
-├── .gitwiki/templates/
-│   ├── runbook.md
-│   └── troubleshooting.md
+├── .gitwiki/
+│   ├── config.yaml
+│   └── templates/
+│       ├── runbook.md
+│       └── troubleshooting.md
 └── content/
 ```
 
-模板使用普通 Markdown，可用 front matter 的 `title` 设置选择器中的名称，`description` 说明用途，`tags` 和 `draft` 设置新页面的初始属性。创建时使用用户输入的新标题，复制正文、标签、描述和草稿标记，不继承模板日期、废弃状态、替代页面或自定义 URL。模板中的站内链接建议使用 `/页面路径`；图片和附件不会随模板复制。
+模板使用普通 Markdown，可用 front matter 的 `title` 设置选择器中的名称，`description` 说明用途，`tags`、`draft` 和 `owner` 设置新页面的初始属性。创建时使用用户输入的新标题，复制正文、标签、描述、草稿标记和负责人，不继承模板日期、复核日期、废弃状态、替代页面或自定义 URL。模板中的站内链接建议使用 `/页面路径`；图片和附件不会随模板复制。
 
 可将本项目 [examples/templates](../examples/templates/) 中的操作手册、故障排查、设计方案复制到文档仓库的 `.gitwiki/templates/`，提交后通过现有 Git 同步更新。新建页面对话框会显示模板选择和内容预览；目录不存在时仍可创建空白页面。修改或删除模板不影响此前创建的文档。
 
@@ -298,10 +331,10 @@ Nginx 必须显式转发 WebSocket 的 Upgrade 和 Connection 头；其默认空
 
 完成以下检查，才算验证了实际部署：
 
-- 未登录且 `read_public: false`：页面读取接口返回 401；首页 HTML 返回 200 并不表示有文档读取权限。
-- 开启公开阅读并完成必要的首次克隆：在无痕窗口直接访问 `/team` 可阅读；根路径 `/` 仍可能显示登录页，应分享含仓库 slug 的 URL。
+- 未登录且 Wiki 没有开启 `read_public`：页面读取接口返回 401；首页 HTML 返回 200 并不表示有文档读取权限。没安装 App 的仓库匿名访问同样返回 401。
+- 在 Wiki 设置里开启公开阅读并提交后：在无痕窗口直接访问 `/OWNER/wiki-content` 可阅读；根路径 `/` 仍显示登录页，应分享含 owner 和仓库名的 URL。
 - 未登录尝试写入：POST / PUT / DELETE 页面接口以及评论、附件上传接口返回 401。
-- 登录但仅有仓库读取权限：可通过明确的 `/team` 地址阅读，写入返回 403。非公开的只读仓库当前不会列在仓库选择器中。
+- 登录但仅有仓库读取权限：Wiki 出现在侧栏的 Wiki 列表里，可以阅读，写入返回 403。
 - 有 push 权限：完成新建、编辑、附件、评论操作，刷新后内容存在，GitHub 的目标分支也能看到提交。
 - 两个已登录的浏览器窗口打开同一页面：能看到在线成员；浏览器 Network 中 `/ws` 返回 101，协作提示正常。
 - 重启服务后继续阅读；登录状态在 secret 不变且会话未过期时保留，已保存页面和评论存在。
@@ -312,34 +345,38 @@ Nginx 必须显式转发 WebSocket 的 Upgrade 和 Connection 头；其默认空
 ```bash
 # 默认未公开时预期 401；公开并完成克隆时预期 200
 curl --silent --show-error -o /dev/null -w '%{http_code}\n' \
-  https://wiki.example.com/api/repos/team/pages
+  https://wiki.example.com/api/repos/OWNER/wiki-content/pages
 
 # 未登录写入预期 401
 curl --silent --show-error -o /dev/null -w '%{http_code}\n' \
   -X POST -H 'Content-Type: application/json' -d '{"title":"验收"}' \
-  https://wiki.example.com/api/repos/team/page
+  https://wiki.example.com/api/repos/OWNER/wiki-content/page
 ```
 
 后台推送失败时先检查服务日志和工作副本，不要删除本地目录重建，本地可能有尚未推送的提交：
 
 ```bash
 sudo journalctl -u gitwiki -n 100 --no-pager
-sudo -u gitwiki git -C /var/lib/gitwiki/repos/team status --short --branch
-sudo -u gitwiki git -C /var/lib/gitwiki/repos/team log --oneline origin/main..HEAD
+sudo -u gitwiki git -C /var/lib/gitwiki/repos/OWNER/wiki-content status --short --branch
+sudo -u gitwiki git -C /var/lib/gitwiki/repos/OWNER/wiki-content log --oneline origin/main..HEAD
 ```
 
 最后一条命令有输出表示本地领先于当前记录的远端分支；`origin/main` 是最后一次 fetch 的结果，进一步确认时还需检查 GitHub 实际分支。后台推送按 5 秒起、最长 5 分钟间隔重试，本地无待推送提交时每分钟拉取远端更新。遇到 rebase 冲突，先停服务并备份整个工作副本，再由管理员处理冲突，验证后重新启动。
 
-有仓库写权限的用户可打开顶部“同步状态”，查看本次服务启动以来最近成功拉取时间、待推送提交数，以及最近的拉取或推送失败原因。待推送数量相对于最近一次 fetch 记录的远端分支计算。点击“立即同步”会唤醒已有的后台循环，先推送待同步提交，再拉取远端更改；请求返回只代表已触发，面板会每两秒更新结果。若推送持续失败，先处理失败原因，拉取会等待推送完成。状态只保存在内存中，重启后重新记录成功时间。
+有仓库写权限的用户可点侧栏 Wiki 名称旁的云朵图标打开“同步状态”，查看本次服务启动以来最近成功拉取时间、待推送提交数，以及最近的拉取或推送失败原因。推送或拉取失败时云朵变红，顶栏也出现“同步失败”入口；页面打开时会先读取当前状态，之后每次推送或拉取的结果实时推送到页面，恢复后红色提示自动消失。
+
+后台同步以 GitHub App 的身份进行，不用服务器的 SSH 密钥，也不借用登录用户的 token：每次推送或拉取前，服务用 App 私钥换取（或复用未过期的）安装 token，把工作副本的 `origin` 指向带这个 token 的 HTTPS 地址。因此同步不受用户登录过期、退出或长时间没人访问的影响。待推送数量相对于最近一次 fetch 记录的远端分支计算。点击“立即同步”会唤醒已有的后台循环，先推送待同步提交，再拉取远端更改；请求返回只代表已触发，面板会每两秒更新结果。若推送持续失败，先处理失败原因，拉取会等待推送完成。状态只保存在内存中，重启后重新记录成功时间。
 
 ## 常见失败
 
 - `pattern all:dist: no matching files found`：直接构建了 Go，尚未构建前端。先执行 `bun run build`，确认 `internal/web/dist/index.html` 存在，再编译 Go。
-- `session_secret is required` / `at least one repo is required`：配置缺失。检查实际 `-config` 路径。当前启动检查不会验证 OAuth 密钥是否正确，看到 listening 仍需测试登录。
-- `git clone` 失败：核对仓库名、分支、网络和首次读取的账号权限；空仓库先创建首个提交。私有仓库的匿名首次克隆失败时，先登录打开仓库。
+- `session_secret is required` / `github.client_id and github.private_key_file … are required`：配置缺失。检查实际 `-config` 路径。`load GitHub App private key`：私钥路径不对、服务用户读不到，或不是 GitHub 下载的 `.pem`。当前启动检查不会验证 client secret 是否正确，看到 listening 仍需测试登录。
+- `field repos not found in type config.Config`：配置还是旧格式。按「备份和升级」删掉 `repos:`，把各 Wiki 的设置搬进仓库。配置里出现其他不认识的字段同样拒绝启动，避免写错的字段被悄悄忽略。
+- `git clone` 失败：核对网络，以及 App 是否已安装到这个仓库；空仓库先创建首个提交。
+- `GitHub App 没有安装到这个仓库: owner/repo`：在 App 设置页的 Install App 中把它安装到这个仓库，或在仓库所在账号 / 组织的 Settings → GitHub Apps 中把仓库加进已有安装。
 - `bad oauth state`：检查访问域名和回调是否对应、浏览器是否允许 cookie；使用同一地址重新发起登录。
-- 登录后 403：检查 GitHub 仓库权限、组织的 OAuth App 批准状态。权限结果缓存 5 分钟，授权变更可能需要等缓存失效。
-- 页面已保存但 GitHub 没有提交：打开顶部“同步状态”，检查失败原因、待推送数量、分支保护、token 有效性和服务日志。OAuth token 被撤销或过期后需重新登录，再点“立即同步”或再次写入，为后台循环更新凭据。
+- 登录后看不到 Wiki 或 403：检查用户的 GitHub 仓库权限，以及 App 是否安装到了这个仓库（没装时用户的 token 也看不到它）。权限结果缓存 5 分钟，授权变更可能需要等缓存失效。
+- 页面已保存但 GitHub 没有提交：打开“同步状态”（侧栏云朵图标，或顶栏的“同步失败”），检查失败原因、待推送数量、分支保护和服务日志。分支开了保护时，要允许这个 App 推送。
 - 代理返回 502：先检查服务是否 active、本机 `/api/me` 是否可访问及端口是否一致。
 - 上传返回 413：检查代理上传体积限制；示例限制为整个请求 64 MiB，并非每个文件 64 MiB。后端的 multipart 内存参数不是上传大小硬限制。
 - 能阅读但看不到在线成员：匿名阅读不连接 WebSocket；登录后的连接还需检查 Nginx Upgrade 头和超时。
@@ -349,6 +386,8 @@ sudo -u gitwiki git -C /var/lib/gitwiki/repos/team log --oneline origin/main..HE
 GitHub 保存已成功推送的数据，本地工作副本可能额外保存未推送的提交。备份需包含 `/etc/gitwiki/config.yaml` 和 `/var/lib/gitwiki`，不能只备份 `content/`；备份副本含凭据，按原文件的访问权限保存。
 
 升级前确认同步状态，停服务后备份配置、数据和旧二进制，再安装新二进制，启动并执行本机 HTTP、登录、阅读和写入验收。回滚时恢复旧二进制和对应配置；不要覆盖升级期间已经产生的新文档提交。
+
+从服务配置里有 `repos:` 列表的版本升级时：先在旧版本的“同步状态”确认每个 Wiki 都没有待推送提交，再删掉配置里的整个 `repos:`，按需设置 `data_dir`。各 Wiki 的 `title`、`read_public`、`source`、`site_url`、`stale_days` 写进各自仓库的 `.gitwiki/config.yaml` 并提交，`branch` 不再配置（规则见「Wiki 设置」），`content_dir` 固定为 `content`。新版本把工作副本克隆到 `<data_dir>/<owner>/<repo>`，Wiki 地址从 `/<slug>` 变成 `/<owner>/<repo>`，旧地址不再跳转；旧 `workdir` 不再使用，确认提交都已推送后可以删除。
 
 ```bash
 sudo systemctl stop gitwiki

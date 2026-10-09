@@ -1,7 +1,7 @@
 package server
 
 import (
-	"context"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"html/template"
@@ -16,14 +16,12 @@ import (
 
 	"github.com/jimyag/gitwiki/internal/auth"
 	"github.com/jimyag/gitwiki/internal/comments"
-	"github.com/jimyag/gitwiki/internal/config"
 	"github.com/jimyag/gitwiki/internal/gitstore"
 	"github.com/jimyag/gitwiki/internal/importer"
 	"github.com/jimyag/gitwiki/internal/presence"
 )
 
 type Server struct {
-	cfg      *config.Config
 	auth     *auth.Store
 	git      *gitstore.Manager
 	present  *presence.Hub
@@ -32,12 +30,12 @@ type Server struct {
 	comments *comments.Store
 }
 
-func New(cfg *config.Config, as *auth.Store, gm *gitstore.Manager, ph *presence.Hub, static fs.FS) *Server {
+func New(as *auth.Store, gm *gitstore.Manager, ph *presence.Hub, static fs.FS) *Server {
 	s := &Server{
-		cfg: cfg, auth: as, git: gm, present: ph,
+		auth: as, git: gm, present: ph,
 		mux:      http.NewServeMux(),
 		static:   static,
-		comments: comments.New(gm),
+		comments: comments.New(),
 	}
 	s.routes()
 	return s
@@ -50,37 +48,40 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /auth/callback", s.auth.HandleCallback)
 	s.mux.HandleFunc("GET /logout", s.logout)
 	s.mux.HandleFunc("GET /api/me", s.me)
-	s.mux.HandleFunc("GET /api/repos/{slug}/sync", s.write(s.syncStatus))
-	s.mux.HandleFunc("POST /api/repos/{slug}/sync", s.write(s.syncNow))
+	s.mux.HandleFunc("GET /api/repos/{owner}/{repo}/sync", s.write(s.syncStatus))
+	s.mux.HandleFunc("POST /api/repos/{owner}/{repo}/sync", s.write(s.syncNow))
 
-	// Reading needs read access to the GitHub repo; changing anything needs push access.
-	s.mux.HandleFunc("GET /api/repos/{slug}/pages", s.read(s.pageTree))
-	s.mux.HandleFunc("GET /api/repos/{slug}/page", s.read(s.readPage))
-	s.mux.HandleFunc("GET /api/repos/{slug}/history", s.read(s.pageHistory))
-	s.mux.HandleFunc("GET /api/repos/{slug}/revision", s.read(s.readRevision))
-	s.mux.HandleFunc("GET /api/repos/{slug}/recent", s.read(s.recentChanges))
-	s.mux.HandleFunc("GET /api/repos/{slug}/backlinks", s.read(s.backlinks))
-	s.mux.HandleFunc("GET /api/repos/{slug}/search", s.read(s.searchPages))
-	s.mux.HandleFunc("GET /api/repos/{slug}/health", s.read(s.documentHealth))
-	s.mux.HandleFunc("GET /api/repos/{slug}/templates", s.read(s.pageTemplates))
-	s.mux.HandleFunc("GET /api/repos/{slug}/assets", s.read(s.listAssets))
-	s.mux.HandleFunc("GET /api/repos/{slug}/asset", s.read(s.readAsset))
-	s.mux.HandleFunc("GET /api/repos/{slug}/comments", s.read(s.listComments))
-	s.mux.HandleFunc("GET /api/repos/{slug}/trash", s.read(s.trash))
+	// A wiki is a GitHub repo the App is installed on, addressed as owner/repo. Reading needs
+	// read access to the repo (or its read_public setting); changing anything needs push access.
+	s.mux.HandleFunc("GET /api/repos/{owner}/{repo}/settings", s.read(s.repoSettings))
+	s.mux.HandleFunc("GET /api/repos/{owner}/{repo}/pages", s.read(s.pageTree))
+	s.mux.HandleFunc("GET /api/repos/{owner}/{repo}/page", s.read(s.readPage))
+	s.mux.HandleFunc("GET /api/repos/{owner}/{repo}/history", s.read(s.pageHistory))
+	s.mux.HandleFunc("GET /api/repos/{owner}/{repo}/revision", s.read(s.readRevision))
+	s.mux.HandleFunc("GET /api/repos/{owner}/{repo}/recent", s.read(s.recentChanges))
+	s.mux.HandleFunc("GET /api/repos/{owner}/{repo}/backlinks", s.read(s.backlinks))
+	s.mux.HandleFunc("GET /api/repos/{owner}/{repo}/search", s.read(s.searchPages))
+	s.mux.HandleFunc("GET /api/repos/{owner}/{repo}/health", s.read(s.documentHealth))
+	s.mux.HandleFunc("GET /api/repos/{owner}/{repo}/templates", s.read(s.pageTemplates))
+	s.mux.HandleFunc("GET /api/repos/{owner}/{repo}/assets", s.read(s.listAssets))
+	s.mux.HandleFunc("GET /api/repos/{owner}/{repo}/asset", s.read(s.readAsset))
+	s.mux.HandleFunc("GET /api/repos/{owner}/{repo}/comments", s.read(s.listComments))
+	s.mux.HandleFunc("GET /api/repos/{owner}/{repo}/trash", s.read(s.trash))
 
-	s.mux.HandleFunc("POST /api/repos/{slug}/comments", s.write(s.postComment))
-	s.mux.HandleFunc("POST /api/repos/{slug}/import", s.write(s.importPage))
-	s.mux.HandleFunc("POST /api/repos/{slug}/copy", s.write(s.copyPage))
+	s.mux.HandleFunc("POST /api/repos/{owner}/{repo}/comments", s.write(s.postComment))
+	s.mux.HandleFunc("POST /api/repos/{owner}/{repo}/import", s.write(s.importPage))
+	s.mux.HandleFunc("POST /api/repos/{owner}/{repo}/copy", s.write(s.copyPage))
 
-	s.mux.HandleFunc("PUT /api/repos/{slug}/page", s.write(s.savePage))
-	s.mux.HandleFunc("POST /api/repos/{slug}/page", s.write(s.createPage))
-	s.mux.HandleFunc("DELETE /api/repos/{slug}/page", s.write(s.deletePage))
-	s.mux.HandleFunc("PATCH /api/repos/{slug}/page", s.write(s.retitlePage))
-	s.mux.HandleFunc("POST /api/repos/{slug}/move", s.write(s.movePage))
-	s.mux.HandleFunc("POST /api/repos/{slug}/restore", s.write(s.restorePage))
-	s.mux.HandleFunc("POST /api/repos/{slug}/order", s.write(s.reorderPages))
-	s.mux.HandleFunc("POST /api/repos/{slug}/assets", s.write(s.uploadAsset))
-	s.mux.HandleFunc("DELETE /api/repos/{slug}/asset", s.write(s.deleteAsset))
+	s.mux.HandleFunc("PUT /api/repos/{owner}/{repo}/page", s.write(s.savePage))
+	s.mux.HandleFunc("POST /api/repos/{owner}/{repo}/page", s.write(s.createPage))
+	s.mux.HandleFunc("DELETE /api/repos/{owner}/{repo}/page", s.write(s.deletePage))
+	s.mux.HandleFunc("PATCH /api/repos/{owner}/{repo}/page", s.write(s.retitlePage))
+	s.mux.HandleFunc("POST /api/repos/{owner}/{repo}/move", s.write(s.movePage))
+	s.mux.HandleFunc("POST /api/repos/{owner}/{repo}/restore", s.write(s.restorePage))
+	s.mux.HandleFunc("POST /api/repos/{owner}/{repo}/order", s.write(s.reorderPages))
+	s.mux.HandleFunc("POST /api/repos/{owner}/{repo}/tags", s.write(s.retag))
+	s.mux.HandleFunc("POST /api/repos/{owner}/{repo}/assets", s.write(s.uploadAsset))
+	s.mux.HandleFunc("DELETE /api/repos/{owner}/{repo}/asset", s.write(s.deleteAsset))
 
 	s.mux.HandleFunc("GET /ws", s.presence)
 
@@ -94,53 +95,23 @@ func (s *Server) spa(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := strings.TrimPrefix(r.URL.Path, "/")
-	// Pretty URLs: /<repo>/<page>.md shows the source, .pdf prints it. Both are a read on
-	// the page API with a mode flag.
+	// Pretty URLs: /<owner>/<repo>/<page>.md shows the source, .pdf prints it (the home page:
+	// /<owner>/<repo>.md). Both are a read on the page API with a mode flag.
 	if strings.HasSuffix(p, ".md") || strings.HasSuffix(p, ".pdf") {
 		parts := strings.Split(strings.TrimSuffix(strings.TrimSuffix(p, ".md"), ".pdf"), "/")
-		if len(parts) >= 1 && parts[0] != "" && s.cfg.FindRepo(parts[0]) != nil {
-			id := strings.Join(parts[1:], "/")
-			if id == "" {
-				id = gitstore.HomeID
-			}
+		if len(parts) >= 2 && parts[0] != "" && parts[1] != "" {
 			mode := "md"
 			if strings.HasSuffix(p, ".pdf") {
 				mode = "print"
 			}
 			r2 := r.Clone(r.Context())
 			q := r2.URL.Query()
-			q.Set("id", id)
+			q.Set("id", cmp.Or(strings.Join(parts[2:], "/"), gitstore.HomeID))
 			q.Set("mode", mode)
 			r2.URL.RawQuery = q.Encode()
-			r2.URL.Path = "/api/repos/" + parts[0] + "/page"
-			// withRepo 读 PathValue，而 PathValue 只在 mux 路由之后有效——这里直接走 readPage，
-			// 自己挑 repo 并做读取权限检查。
-			rc := s.cfg.FindRepo(parts[0])
-			u := s.auth.CurrentUser(r)
-			if u != nil {
-				var ok bool
-				u, ok = s.authorize(w, r2, u, rc, false)
-				if !ok {
-					return
-				}
-			} else if !rc.ReadPublic {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
+			if c, ok := s.open(w, r2, parts[0]+"/"+parts[1], false); ok {
+				s.readPage(w, r2, c)
 			}
-			rr := s.git.Get(parts[0])
-			if rr == nil {
-				http.Error(w, "repo not initialized", http.StatusInternalServerError)
-				return
-			}
-			token := ""
-			if u != nil {
-				token = u.Token
-			}
-			if err := rr.EnsureCloned(r2.Context(), token); err != nil {
-				http.Error(w, "clone failed: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-			s.readPage(w, r2, &call{slug: parts[0], rc: rc, repo: rr, user: u})
 			return
 		}
 	}
@@ -180,7 +151,7 @@ func (s *Server) syncStatus(w http.ResponseWriter, r *http.Request, c *call) {
 }
 
 func (s *Server) syncNow(w http.ResponseWriter, r *http.Request, c *call) {
-	c.repo.RequestSync(c.user.Token)
+	c.repo.RequestSync()
 	s.syncStatus(w, r, c)
 }
 
@@ -190,14 +161,23 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"user": nil})
 		return
 	}
-	repos, err := s.writeRepos(r.Context(), u)
+	list, err := s.auth.Repos(r.Context(), u)
 	if errors.Is(err, auth.ErrUnauthorized) {
 		auth.ClearSession(w)
 		writeJSON(w, map[string]any{"user": nil})
 		return
 	}
-	// Repos ride along so the client needs one round trip instead of two before the tree:
-	// the ones this user may change. Reading follows repo slugs in URLs instead.
+	if err != nil { // the user is still logged in; the list comes back on the next load
+		log.Printf("list wikis: %v", err)
+	}
+	// The wikis ride along so the client needs one round trip instead of two before the tree:
+	// the repos the App is installed on that this user can read. Others open by URL.
+	repos := make([]repoView, 0, len(list))
+	for _, rp := range list {
+		if rp.Permissions.Pull || rp.Permissions.Push {
+			repos = append(repos, repoView{Slug: rp.FullName, Title: rp.Name, CanWrite: rp.Permissions.Push})
+		}
+	}
 	writeJSON(w, map[string]any{
 		"user":  map[string]string{"login": u.Login, "name": u.Name, "email": u.Email},
 		"repos": repos,
@@ -205,66 +185,20 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 }
 
 type repoView struct {
-	Slug     string   `json:"slug"`
-	Title    string   `json:"title"`
-	CanWrite bool     `json:"can_write"`
-	SiteURL  string   `json:"site_url,omitempty"`
-	Source   []string `json:"source,omitempty"` // /import accepts these markup types
+	Slug     string `json:"slug"` // "owner/repo"
+	Title    string `json:"title"`
+	CanWrite bool   `json:"can_write"`
 }
 
-// writeRepos lists the repos shown in the sidebar's selector. A repo shows up when the
-// user can push to it, or when it's read_public: the selector doubles as navigation to
-// readable repos, not only as a "what may I change" list. can_write tells the UI which.
-func (s *Server) writeRepos(ctx context.Context, u *auth.User) ([]repoView, error) {
-	out := make([]repoView, 0, len(s.cfg.Repos))
-	for _, rc := range s.cfg.Repos {
-		a, err := s.auth.Access(ctx, u, rc.Github)
-		if errors.Is(err, auth.ErrUnauthorized) {
-			return nil, err
-		}
-		if err != nil {
-			log.Printf("access %s: %v", rc.Github, err)
-			continue
-		}
-		if a.Write || rc.ReadPublic {
-			out = append(out, repoView{Slug: rc.Slug, Title: rc.Title, CanWrite: a.Write, SiteURL: rc.SiteURL, Source: rc.Source})
-		}
-	}
-	return out, nil
+func (s *Server) repoSettings(w http.ResponseWriter, r *http.Request, c *call) {
+	writeJSON(w, c.repo.Settings())
 }
 
-// authorize answers whether this user may make this call. On a read_public repo GitHub-read
-// failures degrade to "may read, may not write": a stale token must not lock out readers.
-func (s *Server) authorize(w http.ResponseWriter, r *http.Request, u *auth.User, rc *config.Repo, write bool) (*auth.User, bool) {
-	a, err := s.auth.Access(r.Context(), u, rc.Github)
-	if errors.Is(err, auth.ErrUnauthorized) {
-		auth.ClearSession(w)
-		if !write && rc.ReadPublic {
-			return nil, true // Public reads continue anonymously, without the rejected token.
-		}
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return nil, false
-	}
-	if err != nil {
-		http.Error(w, "permission check failed: "+err.Error(), http.StatusBadGateway)
-		return nil, false
-	}
-	if !write && rc.ReadPublic && !a.Read {
-		return u, true // read_public allows reading; write still needs push
-	}
-	if !a.Read || write && !a.Write {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return nil, false
-	}
-	return u, true
-}
-
-// call is one request against the {slug} repo by a user who may make it.
+// call is one request against a wiki by a user who may make it.
 type call struct {
-	slug string
-	rc   *config.Repo
+	slug string // the wiki's "owner/repo", as GitHub spells it
 	repo *gitstore.Repo
-	user *auth.User // nil when the repo is read_public and the request is anonymous
+	user *auth.User // nil when the wiki is read_public and the request is anonymous
 }
 
 type repoHandler func(w http.ResponseWriter, r *http.Request, c *call)
@@ -274,41 +208,66 @@ func (s *Server) write(h repoHandler) http.HandlerFunc { return s.withRepo(true,
 
 func (s *Server) withRepo(write bool, h repoHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		u := s.auth.CurrentUser(r)
-		slug := r.PathValue("slug")
-		rc := s.cfg.FindRepo(slug)
-		if rc == nil {
-			http.Error(w, "repo not found", http.StatusNotFound)
-			return
+		if c, ok := s.open(w, r, r.PathValue("owner")+"/"+r.PathValue("repo"), write); ok {
+			h(w, r, c)
 		}
-		if u == nil {
-			// Anonymous reading is only allowed when the operator opted the repo in.
-			if write || !rc.ReadPublic {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-		} else {
-			var ok bool
-			u, ok = s.authorize(w, r, u, rc, write)
-			if !ok {
-				return
-			}
-		}
-		rr := s.git.Get(slug)
-		if rr == nil {
-			http.Error(w, "repo not initialized", http.StatusInternalServerError)
-			return
-		}
-		token := ""
-		if u != nil {
-			token = u.Token
-		}
-		if err := rr.EnsureCloned(r.Context(), token); err != nil {
-			http.Error(w, "clone failed: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		h(w, r, &call{slug: slug, rc: rc, repo: rr, user: u})
 	}
+}
+
+// open decides whether this request may read (or, with write, change) wiki name, answering it
+// when not, and gets the wiki's working copy ready. People may do what their GitHub
+// permission on the repo allows; reading is also open to everyone when the wiki's own
+// settings say read_public. A rejected token is dropped: reads go on anonymously.
+func (s *Server) open(w http.ResponseWriter, r *http.Request, name string, write bool) (*call, bool) {
+	u := s.auth.CurrentUser(r)
+	member := false
+	if u != nil {
+		a, err := s.auth.Access(r.Context(), u, name)
+		switch {
+		case errors.Is(err, auth.ErrUnauthorized):
+			auth.ClearSession(w)
+			u = nil
+		case err != nil:
+			http.Error(w, "permission check failed: "+err.Error(), http.StatusBadGateway)
+			return nil, false
+		case write && !a.Write:
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return nil, false
+		default:
+			member = a.Read
+		}
+	}
+	denied := func() (*call, bool) {
+		if u != nil {
+			http.Error(w, "forbidden", http.StatusForbidden)
+		} else {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		}
+		return nil, false
+	}
+	if write && u == nil {
+		return denied()
+	}
+	// Outsiders learn nothing about which repos have the App, or why one cannot be opened.
+	rr, err := s.git.Get(r.Context(), name)
+	if err != nil {
+		if !member {
+			return denied()
+		}
+		fail(w, err)
+		return nil, false
+	}
+	if err := rr.EnsureCloned(r.Context()); err != nil {
+		if !member {
+			return denied()
+		}
+		http.Error(w, "clone failed: "+err.Error(), http.StatusInternalServerError)
+		return nil, false
+	}
+	if !member && !rr.Settings().ReadPublic {
+		return denied()
+	}
+	return &call{slug: rr.Slug(), repo: rr, user: u}, true
 }
 
 // fail answers err with the status code that tells the client what went wrong.
@@ -333,16 +292,11 @@ func (s *Server) presence(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	rc := s.cfg.FindRepo(r.URL.Query().Get("repo"))
-	if rc == nil {
-		http.Error(w, "repo not found", http.StatusNotFound)
-		return
-	}
-	u, ok := s.authorize(w, r, u, rc, false)
+	c, ok := s.open(w, r, r.URL.Query().Get("repo"), false)
 	if !ok {
 		return
 	}
-	if u == nil {
+	if c.user == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -630,6 +584,29 @@ func (s *Server) reorderPages(w http.ResponseWriter, r *http.Request, c *call) {
 	}
 	s.present.BroadcastChanged(c.slug, c.user.Login)
 	writeJSON(w, map[string]string{"status": "reordered"})
+}
+
+// retag renames a tag on every page (to "": removes it), or with pages adds or removes one
+// on just those pages.
+func (s *Server) retag(w http.ResponseWriter, r *http.Request, c *call) {
+	var req struct {
+		From  string   `json:"from"`
+		To    string   `json:"to"`
+		Pages []string `json:"pages"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	pages, err := c.repo.Retag(r.Context(), strings.TrimSpace(req.From), strings.TrimSpace(req.To), req.Pages, c.user)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if len(pages) > 0 {
+		s.present.BroadcastChanged(c.slug, c.user.Login, pages...)
+	}
+	writeJSON(w, map[string]any{"pages": pages})
 }
 
 func (s *Server) searchPages(w http.ResponseWriter, r *http.Request, c *call) {
@@ -994,10 +971,11 @@ func (s *Server) trash(w http.ResponseWriter, r *http.Request, c *call) {
 	writeJSON(w, out)
 }
 
-// importPage converts pasted markup of a configured source type into markdown and creates
+// importPage converts pasted markup of a type the wiki's settings accept into markdown and creates
 // the page. "mediawiki" references docs/mediawiki.md so convert live against the real files.
 func (s *Server) importPage(w http.ResponseWriter, r *http.Request, c *call) {
-	if len(c.rc.Source) == 0 {
+	source := c.repo.Settings().Source
+	if len(source) == 0 {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -1006,7 +984,7 @@ func (s *Server) importPage(w http.ResponseWriter, r *http.Request, c *call) {
 		return
 	}
 	type_ := r.FormValue("type")
-	if !slices.Contains(c.rc.Source, type_) {
+	if !slices.Contains(source, type_) {
 		http.Error(w, "this repo does not accept "+type_, http.StatusForbidden)
 		return
 	}

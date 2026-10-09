@@ -62,41 +62,47 @@ export function CommentsPanel({ repo, pageId, body, onClose }: {
 
   // Phones: a full-screen sheet. From sm up: a column docked next to the page.
   return (
-    <aside className="fixed inset-0 z-40 flex flex-col bg-white sm:static sm:z-auto sm:w-80 xl:w-96 sm:shrink-0 sm:border-l sm:border-stone-200">
-      <div className="h-12 shrink-0 flex items-center gap-2 pl-4 pr-2 border-b border-stone-200">
-        <MessageSquare className="size-4 text-stone-400" />
-        <h2 className="text-sm font-medium text-stone-900">评论</h2>
-        {!!items?.length && <span className="text-xs text-stone-400">{items.length}</span>}
+    <aside className="fixed inset-0 z-40 flex flex-col bg-surface animate-fade-in sm:animate-none sm:static sm:z-auto sm:w-80 xl:w-96 sm:shrink-0 sm:border-l sm:border-line">
+      <div className="h-12 shrink-0 flex items-center gap-2 pl-4 pr-2 border-b border-line">
+        <MessageSquare className="size-4 text-fg-subtle" />
+        <h2 className="text-sm font-semibold text-fg">评论</h2>
+        {!!items?.length && <span className="rounded-full bg-shade px-1.5 text-xs tabular-nums text-fg-muted">{items.length}</span>}
         <button onClick={onClose} title="关闭" className={`${iconBtn} ml-auto`}><X className="size-4" /></button>
       </div>
-      <div ref={listRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-5">
+      <div ref={listRef} className="flex-1 overflow-y-auto px-4 py-5 space-y-6">
         {items === null ? (
-          <div className="text-sm text-stone-400 text-center py-8">加载中…</div>
+          <div className="text-sm text-fg-muted text-center py-8">加载中…</div>
         ) : items.length === 0 ? (
-          <div className="text-sm text-stone-400 text-center py-8">还没有评论</div>
+          <div className="py-12 text-center">
+            <div className="mx-auto flex size-10 items-center justify-center rounded-xl bg-subtle ring-1 ring-line">
+              <MessageSquare className="size-4 text-fg-subtle" />
+            </div>
+            <p className="mt-3 text-sm font-medium text-fg">还没有评论</p>
+            <p className="mt-1 text-xs leading-relaxed text-fg-muted">在正文里选中一段文字，再点“引用所选”，评论会带上这段引用</p>
+          </div>
         ) : items.map(c => <CommentItem key={c.id} c={c} body={body} />)}
       </div>
-      <form className="shrink-0 border-t border-stone-200 p-3" onSubmit={(e) => { e.preventDefault(); void send(true); }}>
+      <form className="shrink-0 border-t border-line p-3" onSubmit={(e) => { e.preventDefault(); void send(true); }}>
         {anchor && (
-          <div className="mb-2 flex items-start gap-2 rounded-r border-l-2 border-amber-400 bg-amber-50 px-2 py-1 text-xs text-amber-900">
+          <div className="mb-2 flex items-start gap-2 rounded-r-lg border-l-2 border-amber-400 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-900 dark:text-amber-200">
             <span className="flex-1 line-clamp-2">{anchor.quote}</span>
-            <button type="button" onClick={() => setAnchor(null)} className="shrink-0 text-amber-700 hover:underline">移除</button>
+            <button type="button" onClick={() => setAnchor(null)} className="shrink-0 hover:underline">移除</button>
           </div>
         )}
-        <div className="rounded-lg border border-stone-200 bg-white transition focus-within:border-emerald-500 focus-within:ring-2 focus-within:ring-emerald-500/20">
+        <div className="rounded-xl bg-surface ring-1 ring-inset ring-line-strong/80 transition-shadow focus-within:ring-2 focus-within:ring-accent/60">
           <textarea
             value={text}
             onChange={(e) => setText(e.target.value)}
             rows={3}
             placeholder="写评论…"
-            className="block w-full resize-none bg-transparent px-3 pt-2 text-sm text-stone-900 outline-none placeholder:text-stone-400"
+            className="block w-full resize-none bg-transparent px-3 pt-2.5 text-sm text-fg outline-none placeholder:text-fg-subtle"
           />
           <div className="flex items-center gap-2 p-1.5">
             <button
               type="button"
               onClick={captureSelection}
               title="先在正文里选中一段，再点这里，评论会带上这段引用"
-              className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-xs text-stone-500 hover:bg-stone-100 hover:text-stone-800 transition"
+              className="inline-flex items-center gap-1 h-7 px-2 rounded-lg text-xs text-fg-muted transition-colors hover:bg-shade hover:text-fg"
             >
               <TextQuote className="size-3.5" />引用所选
             </button>
@@ -111,14 +117,14 @@ export function CommentsPanel({ repo, pageId, body, onClose }: {
 function CommentItem({ c, body }: { c: Comment; body: string }) {
   return (
     <div className="flex gap-2.5">
-      <Avatar login={c.by} name={c.name} className="size-6 text-[10px] mt-0.5" />
+      <Avatar login={c.by} name={c.name} className="size-7 text-[11px] mt-0.5" />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
-          <span className="text-[13px] font-medium text-stone-900 truncate">{c.name || c.by}</span>
-          <span className="shrink-0 text-xs text-stone-400" title={new Date(c.at).toLocaleString()}>{formatRelativeTime(c.at)}</span>
+          <span className="text-[13px] font-semibold text-fg truncate">{c.name || c.by}</span>
+          <span className="shrink-0 text-xs text-fg-subtle" title={new Date(c.at).toLocaleString()}>{formatRelativeTime(c.at)}</span>
         </div>
         {c.anchor && <AnchorPill anchor={c.anchor} body={body} />}
-        <div className="mt-0.5 whitespace-pre-wrap text-sm leading-relaxed text-stone-700">{c.text}</div>
+        <div className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-fg-2">{c.text}</div>
       </div>
     </div>
   );
@@ -139,8 +145,8 @@ function AnchorPill({ anchor, body }: { anchor: CommentAnchor; body: string }) {
     for (const el of all) {
       if (el.textContent?.includes(probe)) {
         (el as HTMLElement).scrollIntoView({ behavior: "smooth", block: "center" });
-        (el as HTMLElement).classList.add("bg-amber-100");
-        setTimeout(() => (el as HTMLElement).classList.remove("bg-amber-100"), 1600);
+        (el as HTMLElement).classList.add("bg-amber-500/20");
+        setTimeout(() => (el as HTMLElement).classList.remove("bg-amber-500/20"), 1600);
         return;
       }
     }
@@ -149,7 +155,7 @@ function AnchorPill({ anchor, body }: { anchor: CommentAnchor; body: string }) {
   return (
     <button
       onClick={jump}
-      className="block mt-1 mb-1.5 max-w-full truncate rounded-r border-l-2 border-amber-300 bg-amber-50/70 px-2 py-1 text-left text-xs text-stone-600 hover:bg-amber-50 transition"
+      className="block mt-1.5 mb-1 max-w-full truncate rounded-r-lg border-l-2 border-amber-400 bg-amber-500/10 px-2 py-1 text-left text-xs text-fg-muted transition-colors hover:bg-amber-500/15"
       title="跳到原文"
     >
       {anchor.quote}

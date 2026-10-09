@@ -1,6 +1,26 @@
+import { useMemo, useSyncExternalStore } from "react";
+
 // "最近看过" 和收藏都在本机 localStorage：跨设备不重要。
 const RECENTS_KEY = "gitwiki.recentPages.v1";
 const FAVS_KEY = "gitwiki.favoritePages.v1";
+
+// Every write bumps the version, so lists on screen (the sidebar's favorites) follow changes
+// made elsewhere in the app.
+let version = 0;
+const listeners = new Set<() => void>();
+function changed() {
+  version++;
+  listeners.forEach(l => l());
+}
+const subscribe = (l: () => void) => {
+  listeners.add(l);
+  return () => { listeners.delete(l); };
+};
+
+export function useFavorites(repo: string | null): Entry[] {
+  const v = useSyncExternalStore(subscribe, () => version);
+  return useMemo(() => (repo ? getFavorites(repo) : []), [repo, v]);
+}
 
 export interface Entry {
   repo: string;
@@ -22,6 +42,7 @@ function write(key: string, list: Entry[]) {
   try {
     localStorage.setItem(key, JSON.stringify(list.slice(0, 100)));
   } catch {}
+  changed();
 }
 
 export const getRecents = (repo: string) => read(RECENTS_KEY).filter(e => e.repo === repo);
@@ -56,4 +77,5 @@ export function moveRecentPages(repo: string, from: string, to: string) {
     localStorage.setItem(key, JSON.stringify(read(key).map(e => e.repo === repo && (e.page === from || e.page.startsWith(from + "/"))
       ? { ...e, page: to + e.page.slice(from.length) } : e)));
   }
+  changed();
 }

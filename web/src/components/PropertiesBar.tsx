@@ -1,13 +1,19 @@
 import { useState } from "react";
-import { CalendarDays, Tag, X } from "lucide-react";
+import { Archive, CalendarDays, FilePen, Hash, UserRound, X } from "lucide-react";
 import type { Meta } from "../lib/api";
 import { useStore } from "../store";
 import { pagePath } from "../lib/tree";
 import { HOME } from "../lib/route";
 import { PagePicker } from "./PagePicker";
 
-// The page's Hugo front matter that the editor exposes: tags, draft, date and description.
-// Every other field in the file is kept as it is.
+// One pill per property, so they line up as a single quiet row under the title.
+const pill = "inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full text-[13px] ring-1 ring-inset ring-line transition-colors";
+// The checkbox inside is visually hidden; the pill shows its state and its keyboard focus.
+const toggle = (on: boolean, onCls: string) =>
+  `${pill} cursor-pointer select-none has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-accent/60 ${on ? onCls : "text-fg-muted hover:bg-shade hover:text-fg"}`;
+
+// The page's Hugo front matter that the editor exposes: tags, draft, date, owner, deprecation
+// and description. Every other field in the file is kept as it is.
 export function PropertiesBar({ meta, onChange }: { meta: Meta; onChange(m: Meta): void }) {
   const [tag, setTag] = useState("");
   const [picking, setPicking] = useState(false);
@@ -22,63 +28,80 @@ export function PropertiesBar({ meta, onChange }: { meta: Meta; onChange(m: Meta
   };
 
   return (
-    <div className="w-full max-w-3xl mx-auto flex flex-wrap items-center gap-x-5 gap-y-2 px-1 text-[13px] text-stone-500">
-      <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-        <Tag className="size-3.5 shrink-0 text-stone-400" />
+    <div className="space-y-2.5 px-1">
+      <div className="flex flex-wrap items-center gap-1.5 text-fg-muted">
         {meta.tags.map(t => (
-          <span key={t} className="inline-flex items-center gap-0.5 h-6 pl-2 pr-1 rounded-full bg-stone-100 text-stone-700">
-            {t}
+          <span key={t} className="inline-flex items-center gap-0.5 h-7 pl-2.5 pr-1 rounded-full bg-shade text-[13px] text-fg-2">
+            <span className="text-fg-subtle">#</span>{t}
             <button
               onClick={() => onChange({ ...meta, tags: meta.tags.filter(x => x !== t) })}
               title={`移除标签 ${t}`}
-              className="p-0.5 rounded-full text-stone-400 hover:text-stone-700 hover:bg-stone-200"
+              className="ml-0.5 p-0.5 rounded-full text-fg-subtle hover:text-fg hover:bg-shade"
             ><X className="size-3" /></button>
           </span>
         ))}
-        <input
-          value={tag}
-          onChange={(e) => setTag(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === "," || e.key === "，") { e.preventDefault(); addTag(); }
-            if (e.key === "Backspace" && !tag && meta.tags.length) onChange({ ...meta, tags: meta.tags.slice(0, -1) });
-          }}
-          onBlur={addTag}
-          placeholder={meta.tags.length ? "继续添加" : "添加标签，回车确认"}
-          className="w-32 h-6 bg-transparent outline-none placeholder:text-stone-400"
-        />
+        <label className={`${pill} text-fg-muted focus-within:ring-2 focus-within:ring-accent/60`}>
+          <Hash className="size-3.5 shrink-0 text-fg-subtle" />
+          <input
+            value={tag}
+            onChange={(e) => setTag(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === "," || e.key === "，") { e.preventDefault(); addTag(); }
+              if (e.key === "Backspace" && !tag && meta.tags.length) onChange({ ...meta, tags: meta.tags.slice(0, -1) });
+            }}
+            onBlur={addTag}
+            placeholder={meta.tags.length ? "继续添加" : "添加标签，回车确认"}
+            className="field-sizing-content min-w-16 bg-transparent text-fg outline-none placeholder:text-fg-subtle"
+          />
+        </label>
+        <span className="mx-1 h-4 w-px bg-line" />
+        <label className={toggle(meta.draft, "bg-amber-500/10 text-amber-800 ring-amber-500/30 dark:text-amber-300")} title="草稿不会发布到站点">
+          <input type="checkbox" checked={meta.draft} onChange={(e) => onChange({ ...meta, draft: e.target.checked })} className="sr-only" />
+          <FilePen className="size-3.5" />草稿
+        </label>
+        <label className={`${pill} date-pill relative text-fg-muted focus-within:ring-2 focus-within:ring-accent/60`} title="文档日期">
+          <CalendarDays className="size-3.5 shrink-0 text-fg-subtle" />
+          <input
+            type="date"
+            value={meta.date.slice(0, 10)}
+            onChange={(e) => onChange({ ...meta, date: withDay(meta.date, e.target.value) })}
+            className="bg-transparent text-fg-2 outline-none"
+          />
+        </label>
+        <label className={`${pill} text-fg-muted focus-within:ring-2 focus-within:ring-accent/60`} title="负责人的 GitHub 用户名。页面长期没有更新时，会连同负责人列在“文档问题”里">
+          <UserRound className="size-3.5 shrink-0 text-fg-subtle" />
+          <input
+            value={meta.owner ?? ""}
+            onChange={(e) => onChange({ ...meta, owner: e.target.value.replace(/[\s@]/g, "") })}
+            placeholder="负责人"
+            aria-label="负责人"
+            className="field-sizing-content min-w-12 bg-transparent text-fg-2 outline-none placeholder:text-fg-subtle"
+          />
+        </label>
+        <label className={toggle(!!meta.deprecated, "bg-amber-500/10 text-amber-800 ring-amber-500/30 dark:text-amber-300")}>
+          <input type="checkbox" checked={!!meta.deprecated} onChange={e => onChange({ ...meta, deprecated: e.target.checked, replaced_by: e.target.checked ? meta.replaced_by : "" })} className="sr-only" />
+          <Archive className="size-3.5" />已废弃
+        </label>
+        {meta.deprecated && (
+          <span className="inline-flex items-center gap-1 text-[13px]">
+            <button onClick={() => setPicking(true)} className="rounded-md px-1.5 py-0.5 text-amber-800 underline underline-offset-2 hover:bg-amber-500/10 dark:text-amber-300">
+              {meta.replaced_by ? `替代页面：${replacement ?? "页面不存在"}` : "选择替代页面（可选）"}
+            </button>
+            {meta.replaced_by && (
+              <button title="移除替代页面" onClick={() => onChange({ ...meta, replaced_by: "" })} className="rounded-full p-0.5 text-fg-subtle hover:bg-shade hover:text-fg">
+                <X className="size-3.5" />
+              </button>
+            )}
+          </span>
+        )}
       </div>
-      <label className="inline-flex items-center gap-1.5 cursor-pointer select-none" title="草稿不会发布到站点">
-        <input
-          type="checkbox"
-          checked={meta.draft}
-          onChange={(e) => onChange({ ...meta, draft: e.target.checked })}
-          className="accent-emerald-600"
-        />
-        草稿
-      </label>
-      <label className="inline-flex items-center gap-1.5" title="文档日期">
-        <CalendarDays className="size-3.5 text-stone-400" />
-        <input
-          type="date"
-          value={meta.date.slice(0, 10)}
-          onChange={(e) => onChange({ ...meta, date: withDay(meta.date, e.target.value) })}
-          className="h-6 bg-transparent outline-none text-stone-600"
-        />
-      </label>
-      <label className="inline-flex items-center gap-1.5 cursor-pointer">
-        <input type="checkbox" checked={!!meta.deprecated} onChange={e => onChange({ ...meta, deprecated: e.target.checked, replaced_by: e.target.checked ? meta.replaced_by : "" })} className="accent-amber-600" />
-        已废弃
-      </label>
-      {meta.deprecated && <span className="inline-flex items-center gap-2">
-        <button onClick={() => setPicking(true)} className="underline text-amber-800">{meta.replaced_by ? `替代页面：${replacement ?? "页面不存在"}` : "选择替代页面（可选）"}</button>
-        {meta.replaced_by && <button title="移除替代页面" onClick={() => onChange({ ...meta, replaced_by: "" })}><X className="size-3.5" /></button>}
-      </span>}
       {picking && <PagePicker title="选择替代页面" disabled={id => id === pageId} onClose={() => setPicking(false)} onPick={p => { onChange({ ...meta, replaced_by: p.id }); setPicking(false); }} />}
       <input
         value={meta.description}
         onChange={(e) => onChange({ ...meta, description: e.target.value })}
         placeholder="一句话描述（站点摘要和搜索引擎会用到）"
-        className="flex-1 min-w-[14rem] h-6 bg-transparent outline-none border-b border-transparent focus:border-stone-300 placeholder:text-stone-400"
+        aria-label="页面描述"
+        className="w-full h-8 border-b border-transparent bg-transparent text-[15px] text-fg-muted outline-none transition-colors placeholder:text-fg-subtle focus:border-line-strong"
       />
     </div>
   );

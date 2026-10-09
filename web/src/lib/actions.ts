@@ -3,7 +3,7 @@ import { api } from "./api";
 import { clearDraft, moveDrafts } from "./draft";
 import { moveRecentPages } from "./recents";
 import { HOME } from "./route";
-import { parentOf } from "./tree";
+import { pagePath, parentOf } from "./tree";
 import { useStore } from "../store";
 
 // Page operations shared by the sidebar (drag and drop) and the page menu.
@@ -38,25 +38,50 @@ export function followPageMove(repo: string, from: string, to: string) {
   }
 }
 
-// movePage moves id under parentId ("" for the top level). If the open page moved with it,
-// the editor follows it to its new address.
-export async function movePage(id: string, parentId: string) {
+// movePage moves id under parentId ("" for the top level) and resolves to its new id (null if
+// it did not move). If the open page moved with it, the editor follows it to its new address.
+export async function movePage(id: string, parentId: string): Promise<string | null> {
   const st = useStore.getState();
   const repo = st.currentRepo;
   const open = st.currentPageId;
-  if (!repo) return;
+  if (!repo) return null;
   const affected = open !== null && (open === id || open.startsWith(id + "/"));
   if (affected && st.dirty) {
     toast.error("先保存或放弃当前页面的修改，再移动它");
-    return;
+    return null;
   }
   try {
     const res = await api.movePage(repo, id, parentId);
     followPageMove(repo, id, res.id);
     await useStore.getState().refreshTree();
     toast.success(res.links_updated ? `已移动，更新了 ${res.links_updated} 个页面里的链接` : "已移动");
+    return res.id;
   } catch (e) {
     toast.error(`移动失败：${(e as Error).message}`);
+    return null;
+  }
+}
+
+// placePage puts id right before or after the page beside, moving it under that page's parent
+// first when it lives elsewhere. Order is kept as `weight`, which only page files can carry:
+// folders without one keep their place at the end.
+export async function placePage(id: string, beside: string, after: boolean) {
+  const repo = useStore.getState().currentRepo;
+  const parent = parentOf(beside);
+  if (!repo) return;
+  const placed = parentOf(id) === parent ? id : await movePage(id, parent);
+  if (!placed) return;
+  const tree = useStore.getState().tree;
+  const siblings = (parent ? pagePath(tree, parent).at(-1)?.children : tree?.children) ?? [];
+  const ids = siblings.filter(n => n.has_body && n.id !== placed).map(n => n.id);
+  const at = ids.indexOf(beside);
+  ids.splice(at < 0 ? ids.length : at + (after ? 1 : 0), 0, placed);
+  if (ids.join() === siblings.filter(n => n.has_body).map(n => n.id).join()) return;
+  try {
+    await api.reorderPages(repo, parent, ids);
+    await useStore.getState().refreshTree();
+  } catch (e) {
+    toast.error(`排序失败：${(e as Error).message}`);
   }
 }
 

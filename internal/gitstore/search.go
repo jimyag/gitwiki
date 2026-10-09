@@ -51,25 +51,11 @@ func (r *Repo) Search(ctx context.Context, q string, opts SearchOptions) ([]Sear
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	updated := map[string]time.Time{}
+	var updated map[string]time.Time
 	if !opts.UpdatedAfter.IsZero() {
-		// One history walk for the filter, rather than one git process per page.
-		out, err := r.gitOut(ctx, "-c", "core.quotePath=false", "log", "--name-only", "--no-renames",
-			strings.Replace(logFormat, "%aI", "%cI", 1), "--", r.cfg.ContentDir)
-		if err != nil {
+		var err error
+		if updated, err = r.lastCommits(ctx); err != nil {
 			return nil, err
-		}
-		for _, entry := range parseLog(out) {
-			at, err := time.Parse(time.RFC3339, entry.date)
-			if err != nil {
-				return nil, err
-			}
-			for _, file := range entry.files {
-				abs := filepath.Join(r.cfg.Workdir, filepath.FromSlash(file))
-				if _, seen := updated[abs]; !seen {
-					updated[abs] = at
-				}
-			}
 		}
 	}
 	hits := []SearchHit{}
@@ -106,6 +92,31 @@ func (r *Repo) Search(ctx context.Context, q string, opts SearchOptions) ([]Sear
 		return cmp.Or(cmp.Compare(b.score, a.score), cmp.Compare(a.Title, b.Title))
 	})
 	return hits[:min(len(hits), maxSearchHits)], nil
+}
+
+// lastCommits maps every file under the content dir (by absolute path) to the committer date
+// of the last commit that changed it: one history walk, rather than one git process per page.
+// Caller holds r.mu.
+func (r *Repo) lastCommits(ctx context.Context) (map[string]time.Time, error) {
+	out, err := r.gitOut(ctx, "-c", "core.quotePath=false", "log", "--name-only", "--no-renames",
+		strings.Replace(logFormat, "%aI", "%cI", 1), "--", r.cfg.ContentDir)
+	if err != nil {
+		return nil, err
+	}
+	updated := map[string]time.Time{}
+	for _, entry := range parseLog(out) {
+		at, err := time.Parse(time.RFC3339, entry.date)
+		if err != nil {
+			return nil, err
+		}
+		for _, file := range entry.files {
+			abs := filepath.Join(r.cfg.Workdir, filepath.FromSlash(file))
+			if _, seen := updated[abs]; !seen {
+				updated[abs] = at
+			}
+		}
+	}
+	return updated, nil
 }
 
 // matchPage scores one page (title and id already lowercased); ok is false unless every term

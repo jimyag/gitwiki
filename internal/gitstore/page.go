@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"crypto/rand"
 	"crypto/sha1"
 	"encoding/hex"
 	"errors"
@@ -56,6 +55,8 @@ type Meta struct {
 	Date        string   `json:"date"`
 	Deprecated  bool     `json:"deprecated"`
 	ReplacedBy  string   `json:"replaced_by"`
+	Owner       string   `json:"owner"`    // GitHub login of who keeps the page up to date
+	Reviewed    string   `json:"reviewed"` // date the owner last confirmed it, unchanged, as still right
 }
 
 // MetaOf reads Meta from parsed front matter.
@@ -78,6 +79,8 @@ func MetaOf(fm map[string]any) Meta {
 	m.Date, _ = fm["date"].(string)
 	m.Deprecated, _ = fm["deprecated"].(bool)
 	m.ReplacedBy, _ = fm["replaced_by"].(string)
+	m.Owner, _ = fm["owner"].(string)
+	m.Reviewed, _ = fm["reviewed"].(string)
 	return m
 }
 
@@ -103,6 +106,8 @@ func (m Meta) Apply(fm map[string]any) {
 		m.ReplacedBy = ""
 	}
 	set("replaced_by", cur.ReplacedBy != m.ReplacedBy, m.ReplacedBy == "", m.ReplacedBy)
+	set("owner", cur.Owner != m.Owner, m.Owner == "", m.Owner)
+	set("reviewed", cur.Reviewed != m.Reviewed, m.Reviewed == "", m.Reviewed)
 }
 
 // commitAs commits what is staged with u as author and committer.
@@ -163,7 +168,7 @@ func (r *Repo) diskPath(id string) (abs string, isBundle bool, err error) {
 func (r *Repo) PageTree(ctx context.Context) (*Page, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	root := &Page{ID: "", Title: r.cfg.Title, IsDir: true}
+	root := &Page{ID: "", Title: r.Settings().Title, IsDir: true}
 	contentRoot := filepath.Join(r.cfg.Workdir, r.cfg.ContentDir)
 	err := filepath.WalkDir(contentRoot, func(path string, de os.DirEntry, err error) error {
 		if err != nil {
@@ -329,6 +334,11 @@ type PageContent struct {
 func (r *Repo) SavePage(ctx context.Context, id string, doc *PageDoc, baseSHA, message string, u *auth.User) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.savePage(ctx, id, doc, baseSHA, message, u)
+}
+
+// savePage is SavePage for a caller that holds r.mu.
+func (r *Repo) savePage(ctx context.Context, id string, doc *PageDoc, baseSHA, message string, u *auth.User) (string, error) {
 	abs, isBundle, err := r.diskPath(id)
 	if errors.Is(err, ErrNotFound) && baseSHA != "" {
 		// Edited from a loaded page that has since been deleted or moved: recreating it here
@@ -419,13 +429,14 @@ func (r *Repo) SavePage(ctx context.Context, id string, doc *PageDoc, baseSHA, m
 	if err != nil {
 		return "", err
 	}
-	r.schedulePush(u.Token)
+	r.schedulePush()
 	return sha, nil
 }
 
 // CreatePage creates a page with optional template content. If parentID != "", page is nested.
-// Slug is generated server-side; users only see and edit titles. Rapid duplicate calls
-// with the same (parentID, title, templateID) within 30s return the prior id — guards double-clicks.
+// Its file is named after the title (pageName); retitling it later keeps the name, and so the
+// address. Rapid duplicate calls with the same (parentID, title, templateID) within 30s return
+// the prior id — guards double-clicks.
 func (r *Repo) CreatePage(ctx context.Context, parentID, title, templateID string, u *auth.User) (string, error) {
 	if title == "" {
 		return "", ErrBadPath
@@ -457,26 +468,16 @@ func (r *Repo) CreatePage(ctx context.Context, parentID, title, templateID strin
 		return rc.id, nil
 	}
 	r.recentCreateMu.Unlock()
-	// Generate a random slug, retry on collision (astronomically rare).
-	var id string
-	for i := 0; i < 5; i++ {
-		slug := randomSlug(12)
-		candidate := slug
-		if parentID != "" {
-			candidate = parentID + "/" + slug
-		}
-		if _, _, err := r.diskPath(candidate); errors.Is(err, ErrNotFound) {
-			id = candidate
-			break
-		}
-	}
-	if id == "" {
-		return "", fmt.Errorf("could not allocate unique slug")
+	// Naming and writing under one lock: two people creating the same title get two pages.
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	id, err := r.pageName(parentID, title)
+	if err != nil {
+		return "", err
 	}
 	// A leaf parent must become a bundle to host children. The rename is only staged here;
-	// SavePage's commit below picks it up together with the new page.
+	// the commit below picks it up together with the new page.
 	if parentID != "" {
-		r.mu.Lock()
 		abs, isBundle, err := r.diskPath(parentID)
 		switch {
 		case errors.Is(err, ErrNotFound): // plain directory without a page file: nothing to promote
@@ -484,12 +485,11 @@ func (r *Repo) CreatePage(ctx context.Context, parentID, title, templateID strin
 		case err == nil && !isBundle:
 			err = r.promoteToBundle(ctx, parentID, abs)
 		}
-		r.mu.Unlock()
 		if err != nil {
 			return "", err
 		}
 	}
-	if _, err := r.SavePage(ctx, id, doc, "", "wiki: new page "+title, u); err != nil {
+	if _, err := r.savePage(ctx, id, doc, "", "wiki: new page "+title, u); err != nil {
 		return "", err
 	}
 	r.recentCreateMu.Lock()
@@ -498,18 +498,60 @@ func (r *Repo) CreatePage(ctx context.Context, parentID, title, templateID strin
 	return id, nil
 }
 
-const slugAlphabet = "23456789abcdefghjkmnpqrstuvwxyz" // no 0/1/o/i/l to avoid visual ambiguity
+// fileName is the one rule turning a title (or an uploaded file's name) into a file name:
+// lowercase, as Hugo publishes paths, letters, digits and marks of any script kept, and every
+// run of anything else one "-". "安装 指南" → "安装-指南", "API/设计" → "api-设计". At most 60
+// characters; "" when nothing is left.
+func fileName(s string) string {
+	var b strings.Builder
+	gap := false
+	for _, c := range strings.ToLower(s) {
+		if !unicode.IsLetter(c) && !unicode.IsDigit(c) && !unicode.IsMark(c) {
+			gap = b.Len() > 0
+			continue
+		}
+		if gap {
+			b.WriteByte('-')
+			gap = false
+		}
+		b.WriteRune(c)
+	}
+	out := []rune(b.String())
+	return strings.TrimRight(string(out[:min(len(out), 60)]), "-")
+}
 
-func randomSlug(n int) string {
-	b := make([]byte, n)
-	raw := make([]byte, n)
-	if _, err := rand.Read(raw); err != nil {
-		panic(err)
+// Names Hugo or gitwiki give a meaning inside a page folder: never a page's.
+var reservedNames = []string{"index", "_index", "assets"}
+
+// pageName is the id a new page titled title gets under parent: fileName's name, or "page" when
+// the title has none, with "-2", "-3" … while a sibling has it. Siblings are compared without
+// case (Hugo lowercases paths, and so do macOS file systems) and in any form: leaf, bundle or
+// plain folder. Caller holds r.mu.
+func (r *Repo) pageName(parent, title string) (string, error) {
+	dir := filepath.Join(r.cfg.Workdir, r.cfg.ContentDir)
+	if parent != "" {
+		var err error
+		if dir, err = r.resolvePath(parent); err != nil {
+			return "", err
+		}
 	}
-	for i := range b {
-		b[i] = slugAlphabet[int(raw[i])%len(slugAlphabet)]
+	entries, err := os.ReadDir(dir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
 	}
-	return string(b)
+	taken := map[string]bool{}
+	for _, name := range reservedNames {
+		taken[name] = true
+	}
+	for _, e := range entries {
+		taken[strings.ToLower(strings.TrimSuffix(e.Name(), ".md"))] = true
+	}
+	base := cmp.Or(fileName(title), "page")
+	name := base
+	for i := 2; taken[name]; i++ {
+		name = fmt.Sprintf("%s-%d", base, i)
+	}
+	return path.Join(parent, name), nil
 }
 
 // promoteToBundle moves leaf <id>.md (at leafAbs) to <id>/_index.md and stages both paths,
@@ -583,10 +625,8 @@ func (r *Repo) SaveAsset(ctx context.Context, id string, filename string, body i
 	if ext == "" {
 		ext = extBySniff(body)
 	}
-	base := strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename))
-	if base == "" {
-		base = "asset"
-	}
+	// Named by the same rule as pages, so people find "需求说明.pdf" again by its name.
+	base := cmp.Or(fileName(strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename))), "asset")
 	// short content hash for uniqueness
 	h := sha1.New()
 	data, err := io.ReadAll(io.TeeReader(body, h))
@@ -594,8 +634,7 @@ func (r *Repo) SaveAsset(ctx context.Context, id string, filename string, body i
 		return "", err
 	}
 	shortHash := hex.EncodeToString(h.Sum(nil))[:12]
-	safeBase := sanitizeFilename(base)
-	finalName := safeBase + "-" + shortHash + ext
+	finalName := base + "-" + shortHash + strings.ToLower(ext)
 
 	assetsDirAbs, err := r.resolvePath(assetsDir(id))
 	if err != nil {
@@ -615,7 +654,7 @@ func (r *Repo) SaveAsset(ctx context.Context, id string, filename string, body i
 	if err := r.commitAs(ctx, u, "wiki: add asset "+gitPath); err != nil {
 		return "", err
 	}
-	r.schedulePush(u.Token)
+	r.schedulePush()
 	return "assets/" + finalName, nil
 }
 
@@ -637,28 +676,8 @@ func (r *Repo) DeleteAsset(ctx context.Context, id, name string, u *auth.User) e
 	if err := r.commitAs(ctx, u, "wiki: delete asset "+gitPath); err != nil {
 		return err
 	}
-	r.schedulePush(u.Token)
+	r.schedulePush()
 	return nil
-}
-
-// sanitizeFilename keeps letters and digits of any script (people find "需求说明.pdf" again by
-// its name), '-', '_' and '.', and turns spaces into '-'.
-func sanitizeFilename(s string) string {
-	s = strings.ToLower(s)
-	var b strings.Builder
-	for _, r := range s {
-		switch {
-		case unicode.IsLetter(r), unicode.IsDigit(r), r == '-', r == '_', r == '.':
-			b.WriteRune(r)
-		case r == ' ':
-			b.WriteRune('-')
-		}
-	}
-	out := b.String()
-	if out == "" {
-		out = "asset"
-	}
-	return out
 }
 
 func extBySniff(r io.Reader) string {
@@ -691,35 +710,45 @@ func (r *Repo) DeletePage(ctx context.Context, id string, u *auth.User) error {
 	if err := r.commitAs(ctx, u, "wiki: delete "+id); err != nil {
 		return err
 	}
-	r.schedulePush(u.Token)
+	r.schedulePush()
 	return nil
 }
 
-// MovePage moves page id, with its children and attachments, under newParent ("" or the home
-// page for the top level). The page keeps its slug; links to it and to its children are
-// rewritten in the same commit. It returns the new id and how many pages had links rewritten.
-func (r *Repo) MovePage(ctx context.Context, id, newParent string, u *auth.User) (string, int, error) {
-	if _, err := r.resolvePath(id); err != nil {
-		return "", 0, err
-	}
+// MoveTarget is where MovePage puts page id under newParent ("" or the home page for the top
+// level): the same name in the new folder.
+func MoveTarget(id, newParent string) string {
 	if newParent == HomeID {
 		newParent = ""
 	}
-	if id == HomeID || newParent == id || strings.HasPrefix(newParent, id+"/") {
-		return "", 0, ErrBadPath
-	}
-	if newParent != "" {
-		if _, err := r.resolvePath(newParent); err != nil {
+	return path.Join(newParent, path.Base(id))
+}
+
+// MovePage moves page id, with its children and attachments, to MoveTarget(id, newParent): it
+// keeps its name. Links to it and to its children are rewritten in the same commit and Hugo
+// keeps the old addresses. It returns the new id and how many pages had links rewritten.
+func (r *Repo) MovePage(ctx context.Context, id, newParent string, u *auth.User) (string, int, error) {
+	to := MoveTarget(id, newParent)
+	for _, p := range []string{id, to} {
+		if _, err := r.resolvePath(p); err != nil {
 			return "", 0, err
 		}
 	}
-	newID := path.Join(newParent, path.Base(id))
-	if newID == id {
+	if id == HomeID {
+		return "", 0, ErrBadPath
+	}
+	if to == id {
 		return id, 0, nil
+	}
+	if within(to, id) { // into its own subtree
+		return "", 0, ErrBadPath
+	}
+	parent := path.Dir(to)
+	if parent == "." {
+		parent = ""
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.movePageLocked(ctx, id, newID, newParent, u)
+	return r.movePageLocked(ctx, id, to, parent, u)
 }
 
 type ConflictError struct {
@@ -789,8 +818,71 @@ func (r *Repo) OrderChildren(ctx context.Context, parentID string, orderedIDs []
 	msg := fmt.Sprintf("wiki: reorder pages under %s", parentID)
 	if parentID == "" { msg = "wiki: reorder top-level pages" }
 	if err := r.commitAs(ctx, u, msg); err != nil { return err }
-	r.schedulePush(u.Token)
+	r.schedulePush()
 	return nil
+}
+
+// Retag replaces tag from with to on the pages that have it, in one commit: to "" removes the
+// tag, from "" adds to. Renaming onto a tag a page already has merges the two. With pages
+// set, only those pages change. It returns the pages it changed.
+func (r *Repo) Retag(ctx context.Context, from, to string, pages []string, u *auth.User) ([]string, error) {
+	if from == to || from == "" && pages == nil {
+		return nil, ErrBadPath
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	root := filepath.Join(r.cfg.Workdir, r.cfg.ContentDir)
+	changes := map[string][]byte{}
+	changed := []string{}
+	err := r.walkPages(func(id, abs string, data []byte) error {
+		if pages != nil && !slices.Contains(pages, id) {
+			return nil
+		}
+		doc, _ := ParsePage(data)
+		m := MetaOf(doc.FrontMatter)
+		if from != "" && !slices.Contains(m.Tags, from) {
+			return nil
+		}
+		var tags []string
+		for _, t := range slices.Concat(m.Tags, []string{to}) { // to lands last when added
+			if t == from {
+				t = to
+			}
+			if t != "" && !slices.Contains(tags, t) {
+				tags = append(tags, t)
+			}
+		}
+		if slices.Equal(tags, m.Tags) {
+			return nil
+		}
+		m.Tags = tags
+		m.Apply(doc.FrontMatter)
+		out, err := RenderPage(doc)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, abs)
+		if err != nil {
+			return err
+		}
+		changes[filepath.ToSlash(rel)] = out
+		changed = append(changed, id)
+		return nil
+	})
+	if err != nil || len(changes) == 0 {
+		return changed, err
+	}
+	message := fmt.Sprintf("wiki: tags rename %s → %s", from, to)
+	if from == "" {
+		message = "wiki: tags add " + to
+	} else if to == "" {
+		message = "wiki: tags remove " + from
+	}
+	if err := r.commitChanges(ctx, changes, message, u); err != nil {
+		return nil, err
+	}
+	r.schedulePush()
+	return changed, nil
 }
 
 // readPageInfo reads the tree fields (title, weight, tags, draft) from a page file's front

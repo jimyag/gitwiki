@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -44,8 +43,6 @@ type file struct {
 }
 
 type Store struct {
-	git *gitstore.Manager
-
 	// Pending comments per repo+page, newest last. Not persisted: they vanish on restart,
 	// which matches how the UI presents them as drafts until saved.
 	// ponytail: comment writes and moves share one lock; use per-repo locks if contention matters.
@@ -53,8 +50,8 @@ type Store struct {
 	pending map[string][]Comment
 }
 
-func New(gm *gitstore.Manager) *Store {
-	return &Store{git: gm, pending: map[string][]Comment{}}
+func New() *Store {
+	return &Store{pending: map[string][]Comment{}}
 }
 
 // List merges the stored comments with the pending ones (which are always newer).
@@ -66,6 +63,9 @@ func (s *Store) List(repo *gitstore.Repo, pageID string) ([]Comment, error) {
 		return nil, err
 	}
 	out = append(out, s.pending[key(repo.Slug(), pageID)]...)
+	if out == nil {
+		out = []Comment{} // JSON [] rather than null: the client reads null as still loading
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].At < out[j].At })
 	return out, nil
 }
@@ -127,11 +127,7 @@ func (s *Store) Add(repo *gitstore.Repo, pageID, text string, save bool, anchor 
 func (s *Store) MovePage(ctx context.Context, repo *gitstore.Repo, id, parent string, u *auth.User) (string, int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if parent == gitstore.HomeID {
-		parent = ""
-	}
-	target := path.Join(parent, path.Base(id))
-	if target != id {
+	if target := gitstore.MoveTarget(id, parent); target != id {
 		prefix := key(repo.Slug(), target)
 		for k := range s.pending {
 			if k == prefix || strings.HasPrefix(k, prefix+"/") {

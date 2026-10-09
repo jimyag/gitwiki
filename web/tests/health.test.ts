@@ -35,6 +35,21 @@ test("health checks local GFM links and the same anchors as preview", () => {
   ]);
 });
 
+test("health lists pages not updated for stale_days, except drafts and deprecated pages", () => {
+  const now = Date.parse("2026-10-08T00:00:00Z");
+  const at = (p: HealthPage, updated: string, meta: Partial<HealthPage["meta"]> = {}): HealthPage => ({ ...p, updated, meta: { ...p.meta, ...meta } });
+  const pages = [
+    at(page("a", "a.md", ""), "2026-01-01T00:00:00Z", { owner: "jimyag" }),
+    at(page("b", "b.md", ""), "2026-01-01T00:00:00Z", { draft: true }),
+    at(page("c", "c.md", ""), "2026-01-01T00:00:00Z", { deprecated: true }),
+    at(page("d", "d.md", ""), "2026-10-01T00:00:00Z"),
+    page("e", "e.md", ""), // never committed
+  ];
+  const files = pages.map(p => p.file);
+  expect(checkHealth({ pages, files, stale_days: 180 }, now).map(i => [i.kind, i.page, i.target])).toEqual([["stale", "a", "负责人：jimyag"]]);
+  expect(checkHealth({ pages, files, stale_days: 0 }, now)).toEqual([]);
+});
+
 test("health checks replacement references and home links", () => {
   const home = page("_index", "_index.md", "## Home\n[home](/#home)\n![image](assets/a.png)");
   home.meta = { ...home.meta, deprecated: true, replaced_by: "gone" };

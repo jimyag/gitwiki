@@ -23,7 +23,6 @@ import (
 var (
 	ErrConflict = errors.New("merge conflict")
 	ErrBadPath  = errors.New("invalid path")
-	ErrPush     = errors.New("push rejected")
 )
 
 type Repo struct {
@@ -33,8 +32,9 @@ type Repo struct {
 	mu     sync.RWMutex
 	cloned atomic.Bool // lets EnsureCloned skip the lock once the checkout exists
 
-	pushKick chan struct{}          // wakes the push loop; buffered(1) so requests coalesce
-	token    atomic.Pointer[string] // newest writer's GitHub token, used by the next push
+	pushKick chan struct{} // wakes the push loop; buffered(1) so requests coalesce
+	tokens   TokenSource   // nil: origin needs no credentials (tests use local origins)
+	homepage string        // the repo's website on GitHub: the default SiteURL
 
 	syncMu     sync.Mutex
 	syncStatus SyncStatus
@@ -50,22 +50,77 @@ type recentCreate struct {
 	at time.Time
 }
 
+// TokenSource gives the credential for cloning, pulling and pushing GitHub repo "owner/name":
+// the GitHub App's installation token. It never depends on who is logged in.
+type TokenSource func(ctx context.Context, githubRepo string) (string, error)
+
+// Lookup tells what GitHub knows of repo "owner/name" through the App, failing with
+// auth.ErrNotInstalled where the App is not installed.
+type Lookup func(ctx context.Context, name string) (auth.RepoInfo, error)
+
+// Manager hands out the wikis: the GitHub repos the App is installed on, each set up the
+// first time it is asked for, with its working copy at <data dir>/<owner>/<repo>.
 type Manager struct {
-	repos map[string]*Repo // keyed by slug
+	dataDir string
+	tokens  TokenSource
+	lookup  Lookup
+
+	mu     sync.Mutex
+	repos  map[string]*Repo // by lower-case "owner/repo": GitHub ignores case in names
+	onSync func(slug string, err error)
+	onPull func(slug string, pages []string)
 }
 
-func NewManager(cfg *config.Config) *Manager {
-	m := &Manager{repos: map[string]*Repo{}}
-	for _, rc := range cfg.Repos {
-		m.repos[rc.Slug] = &Repo{cfg: rc}
+func NewManager(dataDir string, tokens TokenSource, lookup Lookup) *Manager {
+	return &Manager{dataDir: dataDir, tokens: tokens, lookup: lookup, repos: map[string]*Repo{}}
+}
+
+// Get returns wiki "owner/repo", setting it up on first use. The wiki lives on the repo's
+// "wiki" branch when it has one, else on the default branch; a working copy already on disk
+// keeps the branch it has. Get does not clone: EnsureCloned does.
+func (m *Manager) Get(ctx context.Context, name string) (*Repo, error) {
+	key := strings.ToLower(name)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if r, ok := m.repos[key]; ok {
+		return r, nil
 	}
-	return m
+	if m.lookup == nil {
+		return nil, ErrNotFound
+	}
+	info, err := m.lookup(ctx, name)
+	if errors.Is(err, auth.ErrNotInstalled) {
+		return nil, fmt.Errorf("%w: %w", ErrNotFound, err)
+	}
+	if err != nil {
+		return nil, err
+	}
+	owner, repo, _ := strings.Cut(info.FullName, "/")
+	workdir := filepath.Join(m.dataDir, owner, repo)
+	branch := info.DefaultBranch
+	if info.WikiBranch {
+		branch = "wiki"
+	}
+	r := &Repo{
+		cfg:      config.Repo{Github: info.FullName, Branch: branch, Workdir: workdir, ContentDir: "content"},
+		tokens:   m.tokens,
+		homepage: info.Homepage,
+	}
+	// A working copy already on disk stays on the branch it was cloned with. --git-dir=.git:
+	// without a copy here, git must not find a repo further up (data_dir inside a checkout).
+	if out, err := r.gitOut(ctx, "--git-dir=.git", "symbolic-ref", "--short", "HEAD"); err == nil {
+		r.cfg.Branch = strings.TrimSpace(string(out))
+	}
+	m.repos[key] = r
+	if m.onSync != nil {
+		slug := info.FullName
+		r.startSync(func(err error) { m.onSync(slug, err) }, func(pages []string) { m.onPull(slug, pages) })
+	}
+	return r, nil
 }
-
-func (m *Manager) Get(slug string) *Repo { return m.repos[slug] }
 
 // EnsureCloned makes sure workdir is a git checkout of cfg.Github at cfg.Branch.
-func (r *Repo) EnsureCloned(ctx context.Context, token string) error {
+func (r *Repo) EnsureCloned(ctx context.Context) error {
 	if r.cloned.Load() {
 		return nil
 	}
@@ -78,20 +133,36 @@ func (r *Repo) EnsureCloned(ctx context.Context, token string) error {
 	if err := os.MkdirAll(filepath.Dir(r.cfg.Workdir), 0o755); err != nil {
 		return err
 	}
-	remote := authedURL(r.cfg.Github, token)
+	token, err := r.token(ctx)
+	if err != nil {
+		return err
+	}
 	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "100",
-		"--branch", r.cfg.Branch, "--single-branch", remote, r.cfg.Workdir)
+		"--branch", r.cfg.Branch, "--single-branch", authedURL(r.cfg.Github, token), r.cfg.Workdir)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("git clone: %w: %s", err, out)
+		return redact(fmt.Errorf("git clone: %w: %s", err, out), token)
 	}
 	r.cloned.Store(true)
 	return nil
 }
 
-func (r *Repo) setPushToken(ctx context.Context, token string) error {
-	return r.git(ctx, "remote", "set-url", "origin", authedURL(r.cfg.Github, token))
+func (r *Repo) token(ctx context.Context) (string, error) {
+	if r.tokens == nil {
+		return "", nil
+	}
+	return r.tokens(ctx, r.cfg.Github)
+}
+
+// useToken points origin at a fresh installation token before talking to GitHub, and returns
+// it so errors can be redacted. Without a token source origin stays as it is.
+func (r *Repo) useToken(ctx context.Context) (string, error) {
+	token, err := r.token(ctx)
+	if err != nil || r.tokens == nil {
+		return token, err
+	}
+	return token, r.git(ctx, "remote", "set-url", "origin", authedURL(r.cfg.Github, token))
 }
 
 func authedURL(githubRepo, token string) string {
@@ -190,89 +261,6 @@ func (r *Repo) headSHA(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
-}
-
-// Save writes content at rel and creates a commit as the user.
-// If upstream moved since baseSHA, 3-way merges via git merge-file; conflict
-// is returned as ConflictError carrying the marker-annotated content for the UI.
-func (r *Repo) Save(ctx context.Context, rel, content, baseSHA, message string, u *auth.User) (commitSHA string, retErr error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	abs, err := r.resolvePath(rel)
-	if err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-		return "", err
-	}
-
-	if err := r.git(ctx, "fetch", "origin", r.cfg.Branch); err != nil {
-		return "", fmt.Errorf("fetch: %w", err)
-	}
-	localHead, err := r.headSHA(ctx)
-	if err != nil {
-		return "", err
-	}
-
-	if localHead != baseSHA {
-		merged, conflict, err := r.merge3(ctx, rel, baseSHA, localHead, content)
-		if err != nil {
-			return "", err
-		}
-		if conflict {
-			return "", &ConflictError{Path: rel, Merged: merged, CurrentSHA: localHead}
-		}
-		content = merged
-		if err := r.git(ctx, "merge", "--ff-only", "origin/"+r.cfg.Branch); err != nil {
-			return "", fmt.Errorf("ff to origin: %w", err)
-		}
-	}
-
-	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
-		return "", err
-	}
-	// Path relative to repo root for git.
-	gitPath := filepath.ToSlash(filepath.Join(r.cfg.ContentDir, rel))
-	if err := r.git(ctx, "add", "--", gitPath); err != nil {
-		return "", fmt.Errorf("add: %w", err)
-	}
-	if err := r.git(ctx, "diff", "--cached", "--quiet"); err == nil {
-		// nothing changed after merge
-		head, _ := r.headSHA(ctx)
-		return head, nil
-	}
-	if message == "" {
-		message = "wiki: update " + rel
-	}
-	name := u.Name
-	if name == "" {
-		name = u.Login
-	}
-	email := u.Email
-	if email == "" {
-		email = u.Login + "@users.noreply.github.com"
-	}
-	env := []string{
-		"GIT_AUTHOR_NAME=" + name,
-		"GIT_AUTHOR_EMAIL=" + email,
-		"GIT_COMMITTER_NAME=" + name,
-		"GIT_COMMITTER_EMAIL=" + email,
-	}
-	if err := r.gitEnv(ctx, env, "commit", "-m", message); err != nil {
-		return "", fmt.Errorf("commit: %w", err)
-	}
-	sha, err := r.headSHA(ctx)
-	if err != nil {
-		return "", err
-	}
-	if err := r.setPushToken(ctx, u.Token); err != nil {
-		return sha, err
-	}
-	if err := r.git(ctx, "push", "origin", r.cfg.Branch); err != nil {
-		return sha, fmt.Errorf("%w: %v", ErrPush, err)
-	}
-	return sha, nil
 }
 
 // merge3 performs a 3-way merge using `git merge-file`. Returns merged text
@@ -397,7 +385,7 @@ func (r *Repo) SaveRaw(rel, content, baseSHA, message string, u *auth.User) (str
 	if err != nil {
 		return "", err
 	}
-	r.schedulePush(u.Token)
+	r.schedulePush()
 	return sha, nil
 }
 
@@ -408,8 +396,8 @@ func (r *Repo) HeadSHA() (string, error) {
 	return r.headSHA(context.TODO())
 }
 
-// Slug is the repo's URL slug, for keying non-git state (e.g. pending comments).
-func (r *Repo) Slug() string { return r.cfg.Slug }
+// Slug is the wiki's "owner/repo", for keying non-git state (e.g. pending comments).
+func (r *Repo) Slug() string { return r.cfg.Github }
 
 // ReadAssetFile opens the stored bytes of one of a page's assets.
 func (r *Repo) ReadAssetFile(ctx context.Context, pageID, name string) (*os.File, error) {

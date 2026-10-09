@@ -281,7 +281,7 @@ func (r *Repo) RestorePage(ctx context.Context, id, sha string, u *auth.User) er
 	if err := r.commitAs(ctx, u, "wiki: restore "+id); err != nil {
 		return err
 	}
-	r.schedulePush(u.Token)
+	r.schedulePush()
 	return nil
 }
 

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, type PageMeta, type Repo, type User } from "./lib/api";
+import { api, type PageMeta, type Repo, type Settings, type User } from "./lib/api";
 
 export type SaveStatus = "idle" | "saving" | "saved" | "conflict" | "error";
 
@@ -32,6 +32,7 @@ interface State {
   repos: Repo[];
   currentRepo: string | null;
   tree: PageMeta | null;
+  settings: Settings | null; // the open wiki's own, from .gitwiki/config.yaml; loaded with the tree
   refreshTree(): Promise<void>;
   currentPageId: string | null;
   requestedLine: number;
@@ -55,9 +56,14 @@ interface State {
   // Pages (any peer has commented on) for the sidebar comment badge.
   commentPeers: Record<string, string[]>;
   setCommentPeers(page: string, logins: string[]): void;
-  // Why the server's background push to GitHub is failing; null once origin has everything.
+  // Why the server's background sync with GitHub (push, else pull) is failing; null while it works.
   syncError: string | null;
   setSyncError(e: string | null): void;
+  // The search terms to mark in the open page, when it was opened from a search result.
+  searchHighlight: string[];
+  setSearchHighlight(terms: string[]): void;
+  shortcutsOpen: boolean; // the keyboard shortcuts list
+  setShortcutsOpen(open: boolean): void;
   navOpen: boolean; // sidebar drawer on narrow screens
   setNavOpen(open: boolean): void;
   searchOpen: boolean;
@@ -67,6 +73,10 @@ interface State {
   // The open page's panel: opened from the TopBar, rendered by the Editor that owns the page.
   panel: Panel | null;
   setPanel(p: Panel | null): void;
+  // Pages as a page-wide column (false) or across the whole panel, reading and editing alike.
+  // A preference of this browser, set from the page menu or the editor's toolbar.
+  pageWide: boolean;
+  setPageWide(wide: boolean): void;
   setUser(u: User | null): void;
   setRepos(r: Repo[]): void;
   setTree(t: PageMeta | null): void;
@@ -88,7 +98,12 @@ function leaveOk(dirty: boolean): boolean {
   return !dirty || confirm("这个页面有未保存的修改。离开后，下次打开它时可以从本机草稿恢复。确定离开？");
 }
 
-const pageReset = { baseSha: "", dirty: false, saveStatus: "idle" as SaveStatus, lastSavedBy: null, navOpen: false, commentPeers: {}, panel: null };
+const pageReset = { baseSha: "", dirty: false, saveStatus: "idle" as SaveStatus, lastSavedBy: null, navOpen: false, commentPeers: {}, panel: null, searchHighlight: [] };
+
+const WIDE_KEY = "gitwiki.pageWidth";
+function savedWide(): boolean {
+  try { return localStorage.getItem(WIDE_KEY) === "full"; } catch { return false; }
+}
 
 export const useStore = create<State>((set, get) => ({
   user: null,
@@ -101,12 +116,14 @@ export const useStore = create<State>((set, get) => ({
   repos: [],
   currentRepo: null,
   tree: null,
+  settings: null,
+  // A save or a pull can change the settings file too, so it is reread with the tree.
   refreshTree: async () => {
     const repo = get().currentRepo;
     if (!repo) return;
     try {
-      const tree = await api.pageTree(repo);
-      if (get().currentRepo === repo) set({ tree });
+      const [tree, settings] = await Promise.all([api.pageTree(repo), api.settings(repo)]);
+      if (get().currentRepo === repo) set({ tree, settings });
     } catch (e: any) {
       // Anonymous visitor on a repo that isn't read_public: nothing to show, the editor
       // will surface a login hint instead of looping.
@@ -132,6 +149,10 @@ export const useStore = create<State>((set, get) => ({
   lastSavedBy: null,
   syncError: null,
   setSyncError: (syncError) => set({ syncError }),
+  searchHighlight: [],
+  setSearchHighlight: (searchHighlight) => set({ searchHighlight }),
+  shortcutsOpen: false,
+  setShortcutsOpen: (shortcutsOpen) => set({ shortcutsOpen }),
   navOpen: false,
   setNavOpen: (navOpen) => set({ navOpen }),
   searchOpen: false,
@@ -140,6 +161,14 @@ export const useStore = create<State>((set, get) => ({
   setTagsOpen: (tagsOpen) => set({ tagsOpen }),
   panel: null,
   setPanel: (panel) => set({ panel }),
+  pageWide: savedWide(),
+  setPageWide: (pageWide) => {
+    try {
+      if (pageWide) localStorage.setItem(WIDE_KEY, "full");
+      else localStorage.removeItem(WIDE_KEY);
+    } catch {}
+    set({ pageWide });
+  },
   setUser: (user) => set({ user }),
   setRepos: (repos) => set({ repos }),
   setTree: (tree) => set({ tree }),
@@ -154,7 +183,7 @@ export const useStore = create<State>((set, get) => ({
     const s = get();
     if (repo === s.currentRepo && currentPageId === s.currentPageId) return true;
     if (!leaveOk(s.dirty)) return false;
-    set({ ...(repo !== s.currentRepo ? { currentRepo: repo, tree: null } : {}), currentPageId, ...pageReset });
+    set({ ...(repo !== s.currentRepo ? { currentRepo: repo, tree: null, settings: null } : {}), currentPageId, ...pageReset });
     return true;
   },
   reloadPage: () => set(s => ({ pageRev: s.pageRev + 1, dirty: false, saveStatus: "idle", lastSavedBy: null })),
@@ -177,15 +206,15 @@ export const useStore = create<State>((set, get) => ({
 // Whether the user may change the open repo. With read_public the server does not list the
 // repo for logged-out readers; that absence is read-only.
 export const useCanWrite = () => useStore(s => !!s.user && (s.repos.find(r => r.slug === s.currentRepo)?.can_write ?? false));
-// urlRepo: when the open repo isn't in the (writable) repos list — either the user lacks push
-// access or is logged out on a read_public repo — we still have a slug from the URL.
-// A shared placeholder object keeps zustand's Object.is from re-rendering every store update
-// (a fresh object each call is an infinite loop).
+// urlRepo: when the open wiki isn't in the user's list — they are logged out on a read_public
+// wiki, or can only read it through its read_public setting — we still have its slug from the
+// URL. A shared placeholder object keeps zustand's Object.is from re-rendering every store
+// update (a fresh object each call is an infinite loop).
 const urlRepo = new Map<string, Repo>();
 const urlRepoFor = (slug: string): Repo => {
   let r = urlRepo.get(slug);
   if (!r) {
-    r = { slug, title: slug, can_write: false };
+    r = { slug, title: slug.slice(slug.indexOf("/") + 1), can_write: false };
     urlRepo.set(slug, r);
   }
   return r;

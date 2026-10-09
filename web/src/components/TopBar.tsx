@@ -1,19 +1,22 @@
-import { lazy, Suspense, useState, useEffect, useRef, type ReactNode } from "react";
-import { useCanWrite, useRepoInfo, useStore } from "../store";
-import { api, loginUrl, type PageMeta, type PageRef, type SyncStatus } from "../lib/api";
+import { lazy, Suspense, useState, useEffect } from "react";
+import { useCanWrite, useStore } from "../store";
+import { api, loginUrl, type PageMeta, type PageRef } from "../lib/api";
 import { descendants, pagePath, parentOf } from "../lib/tree";
 import { HOME } from "../lib/route";
 import { deletePage, movePage } from "../lib/actions";
 import { isFavorite, toggleFavorite } from "../lib/recents";
 import {
   RefreshCw, Check, AlertTriangle, Loader2, Pencil, ArrowUp, ArrowDown, Trash2, Plus,
-  MoreHorizontal, Menu, ChevronRight, CloudOff, FolderInput, Eye, Printer, FileDown,
-  Copy, ExternalLink, History, MessageSquare, Paperclip, Star,
+  MoreHorizontal, Menu as MenuIcon, CloudOff, FolderInput, Eye, Printer, FileDown,
+  Copy, ExternalLink, History, MessageSquare, Paperclip, Star, FoldHorizontal, UnfoldHorizontal,
 } from "lucide-react";
 import { toast } from "sonner";
-import { NewPageDialog } from "./Sidebar";
+import { NewPageDialog, SyncDialog } from "./Sidebar";
 import { PagePicker } from "./PagePicker";
-import { Avatar, Dialog, btnDanger, btnGhost, btnPrimary, dialogFooter, iconBtn, input } from "./ui";
+import {
+  Avatar, Dialog, Menu, btnDanger, btnGhost, btnPrimary, chipAmber, chipNeutral, chipRed,
+  dialogDesc, dialogFooter, dialogTitle, iconBtn, input, type MenuEntry,
+} from "./ui";
 
 interface Ctx { node: PageMeta; parentId: string; siblings: PageMeta[]; index: number }
 
@@ -33,9 +36,13 @@ function findNode(tree: PageMeta | null, id: string | null, parentId = "", sibli
 
 const HealthNotice = lazy(() => import("./HealthNotice"));
 
-const chip = "inline-flex items-center gap-1.5 h-7 shrink-0 px-2.5 rounded-full border text-xs";
-const amberChip = `${chip} border-amber-200 bg-amber-50 text-amber-800`;
+// The page's everyday actions on the bar, named once it has room (icons with tooltips below
+// that); the rarer ones stay in the menu.
+const action = "inline-flex items-center gap-1.5 h-8 px-2 rounded-lg text-[13px] text-fg-muted whitespace-nowrap transition-colors hover:bg-shade hover:text-fg disabled:opacity-30 disabled:pointer-events-none";
+const actionLabel = "hidden xl:inline";
 
+// The bar at the top of the page panel: where the page sits, who else is here, the page's own
+// actions (portaled in by Editor) and its menu.
 export function TopBar() {
   const user = useStore(s => s.user);
   const currentRepo = useStore(s => s.currentRepo);
@@ -49,13 +56,13 @@ export function TopBar() {
   const panel = useStore(s => s.panel);
   const setPanel = useStore(s => s.setPanel);
   const syncError = useStore(s => s.syncError);
+  const wide = useStore(s => s.pageWide);
+  const setWide = useStore(s => s.setPageWide);
   const peers = useStore(s => s.peers);
-  const repoInfo = useRepoInfo();
   const canWrite = useCanWrite();
 
-  const [dialog, setDialog] = useState<"create" | "rename" | "move" | "delete" | null>(null);
+  const [dialog, setDialog] = useState<"create" | "rename" | "move" | "delete" | "sync" | null>(null);
   const [fav, setFav] = useState(false);
-  const [syncOpen, setSyncOpen] = useState(false);
   useEffect(() => {
     if (currentRepo && currentPageId) setFav(isFavorite(currentRepo, currentPageId));
   }, [currentRepo, currentPageId]);
@@ -66,8 +73,9 @@ export function TopBar() {
   // The tree node of the open page; the root stands for the home page, which may not exist yet.
   const node = isHome ? tree : ctx?.node;
   const hasPage = !!currentRepo && !!node?.has_body;
-  const siteUrl = repoInfo?.site_url && hasPage && !node?.draft
-    ? repoInfo.site_url.replace(/\/+$/, "") + (isHome ? "/" : `/${currentPageId}/`)
+  const site = useStore(s => s.settings?.site_url);
+  const siteUrl = site && hasPage && !node?.draft
+    ? site.replace(/\/+$/, "") + (isHome ? "/" : `/${currentPageId}/`)
     : null;
   // 其他人正在编辑同一页：点“编辑”前先提醒，不要互相撞车。
   const others = user ? peers.filter(p => p.user !== user.login) : [];
@@ -109,20 +117,26 @@ export function TopBar() {
   };
   const canFav = hasPage && !isHome;
 
-  // On phones the bar keeps only 编辑 and this menu; the icons next to it move in (narrow).
+  // On phones the bar keeps only 编辑 and this menu; the actions it shows from sm up move in
+  // (sm:hidden there).
+  const narrow = "sm:hidden";
   const menu: MenuEntry[] = [
-    ...(user ? [{ label: "评论", icon: <MessageSquare />, onClick: () => setPanel("comments"), narrow: true }] : []),
-    { label: "页面历史", icon: <History />, onClick: () => setPanel("history"), disabled: !hasPage, narrow: true },
-    ...(canFav ? [{ label: fav ? "取消收藏" : "收藏", icon: <Star />, onClick: toggleFav, narrow: true }] : []),
-    { label: "附件", icon: <Paperclip />, onClick: () => setPanel("assets") },
+    ...(user ? [{ label: "评论", icon: <MessageSquare />, onClick: () => setPanel("comments"), className: narrow }] : []),
+    { label: "页面历史", icon: <History />, onClick: () => setPanel("history"), disabled: !hasPage, className: narrow },
+    { label: "附件", icon: <Paperclip />, onClick: () => setPanel("assets"), className: narrow },
+    ...(canFav ? [{ label: fav ? "取消收藏" : "收藏", icon: <Star />, onClick: toggleFav, className: narrow }] : []),
     ...(siteUrl ? [{ label: "在站点中查看", icon: <ExternalLink />, href: siteUrl }] : []),
     ...(hasPage && currentRepo && currentPageId ? [
       { label: "Markdown 源文件", icon: <FileDown />, href: api.mdUrl(currentRepo, currentPageId) },
       { label: "打印 / 导出 PDF", icon: <Printer />, onClick: () => window.print() },
     ] : []),
+    // Phones are full width anyway.
+    wide
+      ? { label: "恢复单页宽度", icon: <FoldHorizontal />, onClick: () => setWide(false), className: "max-md:hidden" }
+      : { label: "铺满宽度", icon: <UnfoldHorizontal />, onClick: () => setWide(true), className: "max-md:hidden" },
     ...(ctx && canWrite ? [
       "-" as const,
-      { label: "新建子页面", icon: <Plus />, onClick: () => setDialog("create") },
+      { label: "新建子页面", icon: <Plus />, onClick: () => setDialog("create"), className: narrow },
       { label: "重命名", icon: <Pencil />, onClick: () => setDialog("rename") },
       { label: "移动到…", icon: <FolderInput />, onClick: () => setDialog("move") },
       { label: "上移", icon: <ArrowUp />, onClick: () => void reorder(-1), disabled: ctx.index === 0 },
@@ -134,47 +148,47 @@ export function TopBar() {
   ];
 
   return (
-    <header className="h-12 shrink-0 bg-white border-b border-stone-200 flex items-center gap-1.5 px-2 sm:px-4 text-sm">
+    <header className="h-12 shrink-0 flex items-center gap-1.5 px-2 sm:px-3 border-b border-line text-sm">
       <button onClick={() => setNavOpen(true)} title="页面列表" className={`${iconBtn} md:hidden`}>
-        <Menu className="size-4" />
+        <MenuIcon className="size-4" />
       </button>
 
       {/* Breadcrumb of titles; ancestors collapse on narrow screens. */}
-      <nav className="flex-1 min-w-0 flex items-center gap-1" aria-label="当前位置">
+      <nav className="flex-1 min-w-0 flex items-center gap-0.5" aria-label="当前位置">
         {path.slice(0, -1).map(n => (
-          <span key={n.id} className="hidden sm:flex items-center gap-1 min-w-0 shrink">
+          <span key={n.id} className="hidden sm:flex items-center gap-0.5 min-w-0 shrink">
             <button
               onClick={() => n.has_body && openPage(n.id)}
               disabled={!n.has_body}
-              className="truncate max-w-[12rem] rounded px-1 py-0.5 text-stone-500 enabled:hover:text-stone-900 enabled:hover:bg-stone-100 transition"
+              className="truncate max-w-[12rem] rounded-md px-1.5 py-1 text-fg-muted transition-colors enabled:hover:bg-shade enabled:hover:text-fg"
             >{n.title}</button>
-            <ChevronRight className="size-3.5 shrink-0 text-stone-300" />
+            <span className="shrink-0 text-fg-subtle/70">/</span>
           </span>
         ))}
         {path.length > 0 && (
-          <span className="truncate px-1 font-medium text-stone-900">{path[path.length - 1].title}</span>
+          <span className="truncate px-1.5 font-medium text-fg">{path[path.length - 1].title}</span>
         )}
-        {isHome && <span className="truncate px-1 font-medium text-stone-900">首页</span>}
+        {isHome && <span className="truncate px-1.5 font-medium text-fg">首页</span>}
       </nav>
 
       <Suspense fallback={null}><HealthNotice key={currentRepo} /></Suspense>
 
       {othersEditing.length > 0 && (
-        <span title={othersEditing.map(p => p.name || p.user).join("、") + " 正在编辑这一页"} className={amberChip}>
+        <span title={othersEditing.map(p => p.name || p.user).join("、") + " 正在编辑这一页"} className={chipAmber}>
           <span className="size-1.5 rounded-full bg-amber-500 animate-pulse" />
           {othersEditing.length === 1
-            ? <><span className="font-medium max-w-[6rem] truncate">{othersEditing[0].name || othersEditing[0].user}</span><span className="hidden sm:inline">正在编辑</span></>
+            ? <><span className="max-w-[6rem] truncate">{othersEditing[0].name || othersEditing[0].user}</span><span className="hidden sm:inline font-normal">正在编辑</span></>
             : <span>{othersEditing.length} 人正在编辑</span>}
         </span>
       )}
 
       {lastSavedBy !== null && user && lastSavedBy !== user.login && (
-        <button onClick={handleRefresh} title="载入新版本" className={`${amberChip} group hover:bg-amber-100 transition`}>
+        <button onClick={handleRefresh} title="载入新版本" className={`${chipAmber} group transition-colors hover:bg-amber-500/20`}>
           <span className="size-1.5 rounded-full bg-amber-500 animate-pulse" />
           {lastSavedBy ? (
             <>
-              <span className="font-medium max-w-[6rem] truncate">{lastSavedBy}</span>
-              <span className="hidden sm:inline">更新了本页</span>
+              <span className="max-w-[6rem] truncate">{lastSavedBy}</span>
+              <span className="hidden sm:inline font-normal">更新了本页</span>
             </>
           ) : (
             <span>这页有新版本</span>
@@ -183,59 +197,73 @@ export function TopBar() {
         </button>
       )}
 
-      {canWrite && currentRepo && (
-        <button onClick={() => setSyncOpen(true)} title="同步状态" className={`${chip} ${syncError ? "border-red-200 bg-red-50 text-red-700" : "border-stone-200 text-stone-600 hover:bg-stone-50"}`}>
-          {syncError ? <CloudOff className="size-3.5" /> : <RefreshCw className="size-3.5" />}
-          <span className="hidden sm:inline">{syncError ? "同步失败" : "同步状态"}</span>
+      {/* Normally the sidebar's cloud shows the sync; a failure is worth the bar's space. */}
+      {canWrite && currentRepo && syncError && (
+        <button onClick={() => setDialog("sync")} title="同步状态" className={`${chipRed} transition-colors hover:bg-red-500/15`}>
+          <CloudOff className="size-3.5" /><span className="hidden sm:inline">同步失败</span>
         </button>
       )}
 
       {!canWrite && (
-        <span title={user ? "你可以阅读，但没有编辑权限" : "登录后可编辑"} className={`${chip} border-transparent bg-stone-100 text-stone-600`}>
+        <span title={user ? "你可以阅读，但没有编辑权限" : "登录后可编辑"} className={chipNeutral}>
           <Eye className="size-3.5" />只读
         </span>
       )}
       {!user && (
-        <a href={loginUrl()} className={`${chip} border-transparent bg-emerald-600 text-white hover:bg-emerald-700 transition`}>登录</a>
+        <a href={loginUrl()} className="inline-flex items-center h-7 shrink-0 px-3 rounded-lg bg-ink text-xs font-medium text-ink-fg transition-colors hover:bg-ink/85">登录</a>
       )}
 
       {/* Who else has this page open. */}
       {others.length > 0 && (
         <div className="hidden sm:flex items-center -space-x-1.5 px-1" title={others.map(p => p.name || p.user).join("、") + " 也在看这一页"}>
-          {others.slice(0, 3).map(p => <Avatar key={p.user} login={p.user} name={p.name} className="size-6 text-[10px] ring-2 ring-white" />)}
-          {others.length > 3 && <span className="size-6 rounded-full bg-stone-100 ring-2 ring-white text-[10px] text-stone-600 flex items-center justify-center">+{others.length - 3}</span>}
+          {others.slice(0, 3).map(p => <Avatar key={p.user} login={p.user} name={p.name} className="size-6 text-[10px] ring-2 ring-surface" />)}
+          {others.length > 3 && <span className="size-6 rounded-full bg-subtle ring-2 ring-surface text-[10px] text-fg-muted flex items-center justify-center">+{others.length - 3}</span>}
         </div>
       )}
 
       <StatusIndicator status={saveStatus} dirty={dirty} />
 
       {/* Editor portals the page's own actions (编辑 / 预览 / 保存) in here. */}
-      <div id="page-actions" className="flex items-center gap-1 shrink-0" />
+      <div id="page-actions" className="flex items-center gap-1.5 shrink-0" />
 
       {currentPageId && (
-        <div className="hidden sm:flex items-center shrink-0">
+        <div className="hidden sm:flex items-center gap-0.5 shrink-0 pl-1">
           {user && (
             <button
               onClick={() => setPanel(panel === "comments" ? null : "comments")}
               title="评论"
               aria-pressed={panel === "comments"}
-              className={iconBtn + (panel === "comments" ? " bg-stone-100" : "")}
+              className={action + (panel === "comments" ? " bg-shade" : "")}
             >
-              {/* State colours go on the icon: on the button they would tie with iconBtn's own text colour. */}
-              <MessageSquare className={"size-4" + (panel === "comments" ? " text-stone-900" : "")} />
+              {/* State colours go on the content: on the button they would tie with action's own text colour. */}
+              <MessageSquare className={"size-4" + (panel === "comments" ? " text-fg" : "")} />
+              <span className={actionLabel + (panel === "comments" ? " text-fg" : "")}>评论</span>
             </button>
           )}
-          <button onClick={() => setPanel("history")} disabled={!hasPage} title="页面历史" className={iconBtn}>
-            <History className="size-4" />
+          <button onClick={() => setPanel("history")} disabled={!hasPage} title="页面历史" className={action}>
+            <History className="size-4" /><span className={actionLabel}>历史</span>
+          </button>
+          <button onClick={() => setPanel("assets")} title="附件" className={action}>
+            <Paperclip className="size-4" /><span className={actionLabel}>附件</span>
           </button>
           {canFav && (
-            <button onClick={toggleFav} title={fav ? "取消收藏" : "收藏"} className={iconBtn}>
+            <button onClick={toggleFav} title={fav ? "取消收藏" : "收藏"} aria-pressed={fav} className={action}>
               <Star className={"size-4" + (fav ? " text-amber-500 fill-amber-400" : "")} />
+              <span className={actionLabel}>{fav ? "已收藏" : "收藏"}</span>
+            </button>
+          )}
+          {ctx && canWrite && (
+            <button onClick={() => setDialog("create")} title="新建子页面" className={action}>
+              <Plus className="size-4" /><span className={actionLabel}>新建子页面</span>
             </button>
           )}
         </div>
       )}
-      {currentPageId && <MoreMenu entries={menu} />}
+      {currentPageId && (
+        <Menu entries={menu} label="更多操作" buttonClass={action}>
+          <MoreHorizontal className="size-4" /><span className={actionLabel}>更多操作</span>
+        </Menu>
+      )}
 
       {dialog === "create" && ctx && <NewPageDialog parentId={ctx.node.id} onClose={() => setDialog(null)} />}
       {dialog === "rename" && ctx && <RenameDialog node={ctx.node} onClose={() => setDialog(null)} />}
@@ -250,68 +278,8 @@ export function TopBar() {
         />
       )}
       {dialog === "delete" && ctx && <DeleteDialog node={ctx.node} onClose={() => setDialog(null)} />}
-      {syncOpen && currentRepo && canWrite && <SyncDialog key={currentRepo} slug={currentRepo} onClose={() => setSyncOpen(false)} />}
+      {dialog === "sync" && currentRepo && <SyncDialog key={currentRepo} slug={currentRepo} onClose={() => setDialog(null)} />}
     </header>
-  );
-}
-
-function SyncDialog({ slug, onClose }: { slug: string; onClose(): void }) {
-  const [status, setStatus] = useState<SyncStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [requesting, setRequesting] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    async function refresh() {
-      try {
-        const next = await api.syncStatus(slug);
-        if (!cancelled) { setStatus(next); setError(null); }
-      } catch (e) {
-        if (!cancelled) setError((e as Error).message);
-      } finally {
-        if (!cancelled) timer = setTimeout(refresh, 2000);
-      }
-    }
-    void refresh();
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [slug]);
-
-  async function sync() {
-    setRequesting(true);
-    try {
-      setStatus(await api.syncNow(slug));
-      setError(null);
-      toast.success("已触发同步");
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setRequesting(false);
-    }
-  }
-  const busy = requesting || status?.running || status?.queued;
-  return (
-    <Dialog onClose={onClose}>
-      <div className="p-5 space-y-4">
-        <h2 className="text-base font-semibold text-stone-900">同步状态</h2>
-        <p className="text-sm text-stone-500">每分钟检查 GitHub 上的更改，已保存的修改会自动推送。</p>
-        {status ? (
-          <dl className="space-y-2 text-sm text-stone-700" aria-live="polite">
-            <div className="flex justify-between gap-3"><dt>最近成功拉取</dt><dd>{status.last_pull ? new Date(status.last_pull).toLocaleString() : "尚未成功拉取"}</dd></div>
-            <div className="flex justify-between gap-3"><dt>待推送提交</dt><dd>{status.pending} 个</dd></div>
-            <div className="flex justify-between gap-3"><dt>当前状态</dt><dd>{busy ? "同步中…" : status.pull_error || status.push_error ? "同步失败，会自动重试" : "空闲"}</dd></div>
-          </dl>
-        ) : !error && <p className="text-sm text-stone-500">加载中…</p>}
-        {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
-        {status?.pull_error && <p role="alert" className="text-sm text-red-700 whitespace-pre-wrap break-all">拉取失败：{status.pull_error}</p>}
-        {status?.push_error && <p role="alert" className="text-sm text-red-700 whitespace-pre-wrap break-all">推送失败：{status.push_error}</p>}
-      </div>
-      <div className={dialogFooter}>
-        <button onClick={onClose} className={btnGhost}>关闭</button>
-        <button onClick={() => void sync()} disabled={!status || !!busy} className={btnPrimary}>
-          <RefreshCw className={`size-3.5${busy ? " animate-spin" : ""}`} />{busy ? "同步中…" : "立即同步"}
-        </button>
-      </div>
-    </Dialog>
   );
 }
 
@@ -333,8 +301,8 @@ function RenameDialog({ node, onClose }: { node: PageMeta; onClose(): void }) {
   return (
     <Dialog onClose={onClose}>
       <div className="px-5 pt-5 pb-4">
-        <h3 className="text-sm font-semibold text-stone-900">重命名</h3>
-        <p className="mt-0.5 text-xs text-stone-500">只改标题，页面地址不变</p>
+        <h2 className={dialogTitle}>重命名</h2>
+        <p className={dialogDesc}>只改标题，页面地址不变</p>
         <input
           autoFocus
           className={`${input} mt-4`}
@@ -366,17 +334,17 @@ function DeleteDialog({ node, onClose }: { node: PageMeta; onClose(): void }) {
 
   return (
     <Dialog onClose={onClose} className="max-w-md">
-      <div className="px-5 pt-5 pb-4 space-y-2 text-sm text-stone-600">
-        <h3 className="font-semibold text-stone-900">删除「{node.title}」？</h3>
-        <p>
-          {kids > 0 ? <>会一起删除它下面的 <b className="font-semibold text-stone-900">{kids}</b> 个子页面和所有附件。</> : "会一起删除它的附件。"}
+      <div className="px-5 pt-5 pb-4">
+        <h2 className={dialogTitle}>删除「{node.title}」？</h2>
+        <p className={dialogDesc}>
+          {kids > 0 ? <>会一起删除它下面的 <b className="font-semibold text-fg">{kids}</b> 个子页面和所有附件。</> : "会一起删除它的附件。"}
           删除后可以在侧栏的“回收站”里恢复。
         </p>
-        {refs === null && <p className="text-xs text-stone-400">正在检查哪些页面链接到这里…</p>}
+        {refs === null && <p className="mt-3 text-xs text-fg-subtle">正在检查哪些页面链接到这里…</p>}
         {!!refs?.length && (
-          <div className="rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-amber-900">
-            <p>有 {refs.length} 个页面链接到这里，删除后这些链接会失效：</p>
-            <ul className="mt-1 list-disc list-inside pl-1 text-[13px]">
+          <div className="mt-3 rounded-xl bg-amber-500/10 px-3.5 py-2.5 text-sm text-amber-900 ring-1 ring-inset ring-amber-500/25 dark:text-amber-200">
+            <p className="flex items-center gap-1.5 font-medium"><AlertTriangle className="size-4 shrink-0" />有 {refs.length} 个页面链接到这里，删除后这些链接会失效：</p>
+            <ul className="mt-1.5 list-disc list-inside pl-1 text-[13px]">
               {refs.slice(0, 5).map(r => <li key={r.id} className="truncate">{r.title}</li>)}
               {refs.length > 5 && <li>…等 {refs.length} 个</li>}
             </ul>
@@ -395,74 +363,20 @@ function DeleteDialog({ node, onClose }: { node: PageMeta; onClose(): void }) {
   );
 }
 
-interface MenuItem {
-  label: string;
-  icon: ReactNode;
-  onClick?(): void;
-  href?: string; // opens in a new tab instead
-  disabled?: boolean;
-  danger?: boolean;
-  narrow?: boolean; // only listed on small screens, where the bar has no room for its icon
-}
-type MenuEntry = MenuItem | "-";
-
-function MoreMenu({ entries }: { entries: MenuEntry[] }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  const item = "w-full flex items-center gap-2.5 h-8 px-2 rounded-md text-[13px] text-left transition disabled:opacity-35 disabled:pointer-events-none [&>svg]:size-4 [&>svg]:shrink-0 ";
-  return (
-    <div ref={ref} className="relative shrink-0">
-      <button onClick={() => setOpen(o => !o)} title="更多操作" aria-haspopup="menu" aria-expanded={open} className={iconBtn + (open ? " bg-stone-100" : "")}>
-        <MoreHorizontal className="size-4" />
-      </button>
-      {open && (
-        <div role="menu" className="absolute right-0 top-full mt-1.5 z-30 w-52 max-h-[calc(100dvh-4rem)] overflow-y-auto rounded-lg border border-stone-200 bg-white p-1 shadow-lg">
-          {entries.map((it, i) => {
-            if (it === "-") return <div key={i} role="separator" className="my-1 h-px bg-stone-100" />;
-            const cls = item + (it.danger ? "text-red-600 hover:bg-red-50 [&>svg]:text-red-500 " : "text-stone-700 hover:bg-stone-100 [&>svg]:text-stone-400 ") + (it.narrow ? "sm:hidden" : "");
-            return it.href ? (
-              <a key={it.label} role="menuitem" href={it.href} target="_blank" rel="noopener noreferrer" onClick={() => setOpen(false)} className={cls}>
-                {it.icon}{it.label}
-              </a>
-            ) : (
-              <button key={it.label} role="menuitem" disabled={it.disabled} onClick={() => { setOpen(false); it.onClick?.(); }} className={cls}>
-                {it.icon}{it.label}
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function StatusIndicator({ status, dirty }: { status: string; dirty: boolean }) {
-  const base = "inline-flex items-center gap-1.5 shrink-0 px-1 text-xs";
+  const base = "inline-flex items-center gap-1.5 shrink-0 px-1.5 text-xs";
   if (status === "saving") {
-    return <div className={`${base} text-stone-500`}><Loader2 className="size-3.5 animate-spin" /><span className="hidden sm:inline">保存中</span></div>;
+    return <div className={`${base} text-fg-muted`}><Loader2 className="size-3.5 animate-spin" /><span className="hidden sm:inline">保存中</span></div>;
   }
   if (status === "saved") {
-    return <div className={`${base} text-emerald-700`}><Check className="size-3.5" /><span className="hidden sm:inline">已保存</span></div>;
+    return <div className={`${base} text-accent-strong`}><Check className="size-3.5" /><span className="hidden sm:inline">已保存</span></div>;
   }
   if (status === "conflict") {
-    return <div className={`${chip} border-red-200 bg-red-50 text-red-700 font-medium`}><AlertTriangle className="size-3" />有冲突</div>;
+    return <div className={chipRed}><AlertTriangle className="size-3" />有冲突</div>;
   }
   if (status === "error") {
-    return <div className={`${chip} border-red-200 bg-red-50 text-red-700 font-medium`}>保存出错</div>;
+    return <div className={chipRed}>保存出错</div>;
   }
-  if (dirty) return <div className={`${base} text-stone-400`}><span className="size-1.5 rounded-full bg-stone-400" /><span className="hidden sm:inline">未保存</span></div>;
+  if (dirty) return <div className={`${base} text-fg-muted`}><span className="size-1.5 rounded-full bg-amber-500" /><span className="hidden sm:inline">未保存</span></div>;
   return null;
 }

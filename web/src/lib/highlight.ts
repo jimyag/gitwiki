@@ -42,22 +42,24 @@ let highlighter: Promise<HighlighterCore> | undefined;
 const loaded = new Map<string, Promise<void>>();
 
 // highlight returns the code as themed HTML (one span.line per line), or null for languages
-// it does not know, in which case the caller shows plain text.
+// it does not know, in which case the caller shows plain text. Both themes are in the HTML as
+// CSS variables (--shiki-light / --shiki-dark); index.css picks the one the page shows.
 export async function highlight(code: string, lang: string | undefined): Promise<string | null> {
   const key = lang?.toLowerCase() ?? "";
   const name = aliases[key] ?? key;
   const grammar = grammars[name];
   if (!grammar) return null;
   highlighter ??= (async () => {
-    const [{ createHighlighterCore }, { createJavaScriptRegexEngine }, theme] = await Promise.all([
+    const [{ createHighlighterCore }, { createJavaScriptRegexEngine }, light, dark] = await Promise.all([
       import("shiki/core"),
       import("shiki/engine/javascript"),
       import("shiki/themes/github-light.mjs"),
+      import("shiki/themes/github-dark-default.mjs"),
     ]);
-    return createHighlighterCore({ themes: [theme.default], langs: [], engine: createJavaScriptRegexEngine() });
+    return createHighlighterCore({ themes: [light.default, dark.default], langs: [], engine: createJavaScriptRegexEngine() });
   })();
   const hl = await highlighter;
   if (!loaded.has(name)) loaded.set(name, grammar().then(m => hl.loadLanguage(m.default)));
   await loaded.get(name);
-  return hl.codeToHtml(code, { lang: name, theme: "github-light" });
+  return hl.codeToHtml(code, { lang: name, themes: { light: "github-light", dark: "github-dark-default" }, defaultColor: false });
 }

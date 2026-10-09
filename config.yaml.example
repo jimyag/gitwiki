@@ -1,22 +1,21 @@
 listen: "127.0.0.1:8080"
 
 github:
-  # Create at https://github.com/settings/developers → New OAuth App
-  # Authorization callback URL: http://localhost:8080/auth/callback (or your public URL)/auth/callback
+  # One GitHub App: people log in through it, and gitwiki clones, pulls and pushes as it.
+  # Create at https://github.com/settings/apps/new (see docs/usage.md「注册 GitHub App」):
+  # Callback URL http://localhost:8080/auth/callback (or <your public URL>/auth/callback),
+  # Contents: Read and write, no webhook; then opt out of user token expiration, generate a
+  # private key and install the App on the wiki repos.
   client_id: ""
   client_secret: ""
+  private_key_file: ""   # the App's downloaded .pem
 
 # openssl rand -hex 32
 session_secret: ""
 
-repos:
-  - slug: my-wiki
-    github: owner/repo
-    branch: main
-    workdir: ./data/repos/my-wiki
-    content_dir: content
-    title: My Wiki
-    # Optional: where the Hugo site is published; pages get an "在站点中查看" link.
-    # site_url: https://wiki.example.com
-    # read_public: true        # 不登录也能阅读；写始终要求有 push 权限的 GitHub 账号
-    # source: [markdown, mediawiki]   # 侧栏出现“导入”按钮，把这些格式转成 Markdown
+# Where working copies go, one per wiki at <data_dir>/<owner>/<repo>. Default ./data/repos.
+# data_dir: ./data/repos
+
+# There is no list of wikis here: every repo the App is installed on is one, at
+# /<owner>/<repo>. Each wiki's own settings (title, read_public, source, site_url,
+# stale_days) live in its repo, in .gitwiki/config.yaml; see docs/usage.md「Wiki 设置」.

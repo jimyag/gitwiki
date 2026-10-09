@@ -143,13 +143,21 @@ func (r *Repo) movePageLocked(ctx context.Context, from, to, parent string, u *a
 			}
 			out, changed := rewritePageReferences(string(data), rel, newRel, from, to)
 			doc, _ := ParsePage([]byte(out))
+			render := false
 			if target := MetaOf(doc.FrontMatter).ReplacedBy; target != "" && within(target, from) {
 				doc.FrontMatter["replaced_by"] = to + strings.TrimPrefix(target, from)
+				render, changed = true, true
+			}
+			// Not a link update: the moved page itself only keeps its old address.
+			if oldID, newID := pageIDForPath(rel), pageIDForPath(newRel); oldID != newID {
+				render = addAlias(doc.FrontMatter, oldID, newID) || render
+			}
+			if render {
 				rendered, err := RenderPage(doc)
 				if err != nil {
 					return err
 				}
-				out, changed = string(rendered), true
+				out = string(rendered)
 			}
 			if promoteParent {
 				var promotedLink bool
@@ -157,11 +165,12 @@ func (r *Repo) movePageLocked(ctx context.Context, from, to, parent string, u *a
 				changed = changed || promotedLink
 			}
 			if changed {
-				data = []byte(out)
 				n++
-			} else if rel == newRel {
+			}
+			if out == string(data) && rel == newRel {
 				return nil
 			}
+			data = []byte(out)
 		}
 		if newRel != rel {
 			newAbs, err := r.resolvePath(newRel)
@@ -183,16 +192,47 @@ func (r *Repo) movePageLocked(ctx context.Context, from, to, parent string, u *a
 	if err != nil {
 		return "", 0, err
 	}
-	if err := r.commitMove(ctx, changes, from, to, u); err != nil {
+	if err := r.commitChanges(ctx, changes, fmt.Sprintf("wiki: move %s → %s", from, to), u); err != nil {
 		return "", 0, err
 	}
-	r.schedulePush(u.Token)
+	r.schedulePush()
 	return to, n, nil
 }
 
-// Save the touched files and index so write/stage/commit failures can restore this operation
-// without resetting unrelated work. Existing edits in a touched file are never overwritten.
-func (r *Repo) commitMove(ctx context.Context, changes map[string][]byte, from, to string, u *auth.User) (retErr error) {
+// addAlias keeps a moved page's old address working on the published site: Hugo turns each
+// path in `aliases` into a redirect to the page. A page moved back drops its address from
+// the list again, and one with its own `url` never changes address. It reports whether fm
+// changed.
+func addAlias(fm map[string]any, from, to string) bool {
+	if _, ok := fm["url"]; ok {
+		return false
+	}
+	var list []any
+	switch v := fm["aliases"].(type) {
+	case []any:
+		list = v
+	case string:
+		list = []any{v}
+	}
+	is := func(id string) func(any) bool {
+		return func(a any) bool { s, _ := a.(string); return strings.Trim(s, "/") == id }
+	}
+	out := slices.DeleteFunc(slices.Clone(list), is(to))
+	changed := len(out) != len(list)
+	if !slices.ContainsFunc(out, is(from)) {
+		out, changed = append(out, "/"+from+"/"), true
+	}
+	if changed {
+		fm["aliases"] = out
+	}
+	return changed
+}
+
+// commitChanges writes changes (paths relative to the content dir, nil deletes) as one commit.
+// It saves the touched files and index so write/stage/commit failures can restore this
+// operation without resetting unrelated work. Existing edits in a touched file are never
+// overwritten.
+func (r *Repo) commitChanges(ctx context.Context, changes map[string][]byte, message string, u *auth.User) (retErr error) {
 	paths := make([]string, 0, len(changes))
 	for rel := range changes {
 		if err := r.checkMovePath(rel); err != nil {
@@ -206,7 +246,7 @@ func (r *Repo) commitMove(ctx context.Context, changes map[string][]byte, from, 
 		return err
 	}
 	if len(status) != 0 {
-		return fmt.Errorf("%w: 移动涉及的文件有未提交修改，请先处理", ErrConflict)
+		return fmt.Errorf("%w: 涉及的文件有未提交修改，请先处理", ErrConflict)
 	}
 	indexPath, err := r.gitOut(ctx, "rev-parse", "--path-format=absolute", "--git-path", "index")
 	if err != nil {
@@ -296,8 +336,8 @@ func (r *Repo) commitMove(ctx context.Context, changes map[string][]byte, from, 
 	if err := r.git(ctx, append([]string{"add", "-A", "--"}, paths...)...); err != nil {
 		return err
 	}
-	// --only leaves unrelated staged changes out of the move commit.
-	return r.commitAs(ctx, u, fmt.Sprintf("wiki: move %s → %s", from, to), paths...)
+	// --only leaves unrelated staged changes out of this commit.
+	return r.commitAs(ctx, u, message, paths...)
 }
 
 func (r *Repo) checkMovePath(rel string) error {

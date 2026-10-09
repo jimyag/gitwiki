@@ -2,8 +2,10 @@ package auth
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/jimyag/gitwiki/internal/config"
@@ -105,6 +107,55 @@ func TestAccessNewToken(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("got %d requests, want one per token", calls)
+	}
+}
+
+// A user's wikis are the repos of every installation of the App they can reach, read page by
+// page; the answer is cached per token, and a rejected token is a login error.
+func TestRepos(t *testing.T) {
+	calls := 0
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Header.Get("Authorization") != "Bearer t" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		repo := func(name string, push bool) string {
+			return fmt.Sprintf(`{"full_name":"o/%s","name":%q,"permissions":{"pull":true,"push":%v}}`, name, name, push)
+		}
+		switch r.URL.Path + "?" + r.URL.Query().Get("page") {
+		case "/user/installations?":
+			_, _ = fmt.Fprint(w, `{"installations":[{"id":1},{"id":2}]}`)
+		case "/user/installations/1/repositories?1": // a full page: there is another
+			page := make([]string, 100)
+			for i := range page {
+				page[i] = repo(fmt.Sprintf("r%d", i), false)
+			}
+			_, _ = fmt.Fprintf(w, `{"repositories":[%s]}`, strings.Join(page, ","))
+		case "/user/installations/1/repositories?2":
+			_, _ = fmt.Fprintf(w, `{"repositories":[%s]}`, repo("last", false))
+		case "/user/installations/2/repositories?1":
+			_, _ = fmt.Fprintf(w, `{"repositories":[%s]}`, repo("wiki", true))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer gh.Close()
+	oldAPI := githubAPI
+	githubAPI = gh.URL
+	t.Cleanup(func() { githubAPI = oldAPI })
+	s := NewStore(&config.Config{})
+	for range 2 {
+		repos, err := s.Repos(t.Context(), &User{Login: "u", Token: "t"})
+		if err != nil || len(repos) != 102 || repos[100].FullName != "o/last" || repos[101].Name != "wiki" || !repos[101].Permissions.Push || repos[0].Permissions.Push {
+			t.Fatalf("Repos = %d repos, %v", len(repos), err)
+		}
+	}
+	if calls != 4 {
+		t.Errorf("got %d requests, want 4 then the cache", calls)
+	}
+	if _, err := s.Repos(t.Context(), &User{Login: "u", Token: "revoked"}); !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("rejected token = %v, want ErrUnauthorized", err)
 	}
 }
 

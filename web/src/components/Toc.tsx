@@ -66,8 +66,8 @@ export function Toc({ headings, scrollRoot }: { headings: Heading[]; scrollRoot:
   const top = Math.min(...headings.map(h => h.level));
   return (
     <nav aria-label="目录" className="text-[13px] leading-snug">
-      <div className="mb-3 text-xs font-medium text-stone-400">目录</div>
-      <ul className="border-l border-stone-200">
+      <div className="mb-3 pl-3 text-xs font-medium text-fg-subtle">本页目录</div>
+      <ul className="border-l border-line">
         {headings.map(h => (
           <li key={h.id}>
             <a
@@ -75,10 +75,10 @@ export function Toc({ headings, scrollRoot }: { headings: Heading[]; scrollRoot:
               onClick={(e) => { e.preventDefault(); jump(h.id); }}
               style={{ paddingLeft: `${(h.level - top) * 12 + 12}px` }}
               className={
-                "-ml-px block border-l py-1 pr-2 truncate transition-colors " +
+                "-ml-px block border-l-2 py-1.5 pr-2 truncate transition-colors " +
                 (active === h.id
-                  ? "border-emerald-600 text-stone-900 font-medium"
-                  : "border-transparent text-stone-500 hover:text-stone-900 hover:border-stone-300")
+                  ? "border-accent text-fg font-medium"
+                  : "border-transparent text-fg-muted hover:text-fg")
               }
               title={h.text}
             >{h.text}</a>

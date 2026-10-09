@@ -29,6 +29,8 @@ const actions: [RegExp, string][] = [
   [/^wiki: move/, "移动了页面"],
   [/^wiki: restore .+ to /, "恢复了旧版本"],
   [/^wiki: restore/, "恢复了页面"],
+  [/^wiki: review/, "确认内容仍然有效"],
+  [/^wiki: tags /, "修改了标签"],
 ];
 
 // changeLabel says what a change did to the page, in readers' terms. Changes made outside the

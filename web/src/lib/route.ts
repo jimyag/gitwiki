@@ -1,19 +1,20 @@
-// The address bar mirrors what is open: /<repo>/<page id>#<heading id>, and /<repo> for the home
-// page. Page ids are paths in the content directory (getting-started/install), so the URL follows
-// the wiki's tree and stays valid when a page is retitled.
+// The address bar mirrors what is open: /<owner>/<repo>/<page id>#<heading id>, and
+// /<owner>/<repo> for the home page: a wiki is the GitHub repo owner/repo. Page ids are paths in
+// the content directory (getting-started/install), so the URL follows the wiki's tree and stays
+// valid when a page is retitled.
 
 // The home page, content/_index.md.
 export const HOME = "_index";
 
 export function parseLocation(): { repo: string | null; page: string } {
-  const [repo, ...rest] = location.pathname.split("/").filter(Boolean).map(decodeURIComponent);
-  return { repo: repo ?? null, page: rest.length ? rest.join("/") : HOME };
+  const [owner, name, ...rest] = location.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  return { repo: owner && name ? `${owner}/${name}` : null, page: rest.length ? rest.join("/") : HOME };
 }
 
 export function pathFor(repo: string | null, page: string | null): string {
   if (!repo) return "/";
   const parts = page && page !== HOME ? page.split("/") : [];
-  return "/" + [repo, ...parts].map(encodeURIComponent).join("/");
+  return "/" + [...repo.split("/"), ...parts].map(encodeURIComponent).join("/");
 }
 
 // Pages link to each other by the path Hugo publishes them under: "/getting-started/install",

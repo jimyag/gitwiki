@@ -9,11 +9,14 @@ import type { HealthPage, HealthSnapshot } from "./api";
 import { remarkAlerts, remarkShortcodes } from "./markdown";
 import { HOME } from "./route";
 
+// A stale page has no line: target names its owner, excerpt when it was last updated.
 export interface HealthIssue {
   page: string; title: string; line: number; target: string;
-  kind: "page" | "asset" | "anchor" | "replacement";
+  kind: "page" | "asset" | "anchor" | "replacement" | "stale";
   excerpt: string;
 }
+
+const DAY = 86400000;
 
 // Use the same GFM and heading plugins as Preview; regex-generated slugs disagree on
 // inline formatting, Chinese punctuation, duplicate headings and reference-style links.
@@ -25,7 +28,7 @@ function visit(node: Root | RootContent, fn: (node: Root | RootContent) => void)
   if ("children" in node) for (const child of node.children) visit(child, fn);
 }
 
-export function checkHealth(snapshot: HealthSnapshot) {
+export function checkHealth(snapshot: HealthSnapshot, now = Date.now()) {
   const issues: HealthIssue[] = [];
   const files = new Set(snapshot.files);
   const byPath = new Map<string, HealthPage>();
@@ -47,6 +50,15 @@ export function checkHealth(snapshot: HealthSnapshot) {
     };
     if (page.meta.replaced_by && (!anchors.has(page.meta.replaced_by) || page.meta.replaced_by === page.id)) {
       add("replacement", page.meta.replaced_by, 0);
+    }
+    // Drafts are not published yet and deprecated pages are kept as they are on purpose.
+    const days = page.updated ? Math.floor((now - Date.parse(page.updated)) / DAY) : 0;
+    if (snapshot.stale_days && days >= snapshot.stale_days && !page.meta.draft && !page.meta.deprecated) {
+      issues.push({
+        page: page.id, title: page.title, kind: "stale", line: 0,
+        target: page.meta.owner ? `负责人：${page.meta.owner}` : "未指定负责人",
+        excerpt: `${days} 天没有更新，最后更新于 ${new Date(page.updated!).toLocaleDateString()}`,
+      });
     }
     visit(tree, node => {
       if (node.type !== "element" || (node.tagName !== "a" && node.tagName !== "img")) return;

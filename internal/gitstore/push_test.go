@@ -1,10 +1,12 @@
 package gitstore
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,8 +21,8 @@ func TestSyncStatus(t *testing.T) {
 		t.Fatalf("before sync: %+v, %v", status, err)
 	}
 	r.pushKick = make(chan struct{}, 1)
-	r.RequestSync("")
-	r.RequestSync("")
+	r.RequestSync()
+	r.RequestSync()
 	status, err = r.Status(t.Context())
 	if err != nil || !status.Queued || len(r.pushKick) != 1 {
 		t.Fatalf("manual requests must coalesce: %+v, %v", status, err)
@@ -52,6 +54,91 @@ func TestSyncStatus(t *testing.T) {
 	status, err = r.Status(t.Context())
 	if err != nil || status.PullError != "" {
 		t.Fatalf("successful retry must clear the error: %+v, %v", status, err)
+	}
+}
+
+// A failing pull reaches clients like a failing push does, and a good pull clears it.
+func TestSyncLoopReportsPullFailures(t *testing.T) {
+	r, origin, _ := saveBehindExternalCommit(t, "content/b.md")
+	reports := make(chan error, 64)
+	r.startSync(func(err error) {
+		select {
+		case reports <- err:
+		default:
+		}
+	}, func([]string) {})
+	next := func(failing bool) {
+		t.Helper()
+		deadline := time.After(30 * time.Second)
+		for {
+			select {
+			case err := <-reports:
+				if (err != nil) == failing {
+					return
+				}
+			case <-deadline:
+				t.Fatalf("no report with failing=%v", failing)
+			}
+		}
+	}
+	next(false) // the save is pushed
+	mustGit(t, r.cfg.Workdir, "remote", "set-url", "origin", origin+"-missing")
+	r.RequestSync() // nothing left to push: straight to the pull
+	next(true)
+	mustGit(t, r.cfg.Workdir, "remote", "set-url", "origin", origin)
+	r.RequestSync()
+	next(false)
+}
+
+// Sync asks the token source (the App's installation token) on every attempt and pushes with
+// that token; while it has none, the reason reaches clients.
+func TestSyncUsesAppToken(t *testing.T) {
+	r, origin, _ := saveBehindExternalCommit(t, "content/b.md")
+	r.cfg.Github = "x/y"
+	// Pushes go to authedURL: only the App token's URL leads to origin.
+	gitconfig := filepath.Join(t.TempDir(), "gitconfig")
+	writeFile(t, filepath.Dir(gitconfig), "gitconfig", "[url \""+origin+"\"]\n\tinsteadOf = "+authedURL("x/y", "app-token")+"\n")
+	t.Setenv("GIT_CONFIG_GLOBAL", gitconfig)
+	var installed atomic.Bool
+	r.tokens = func(_ context.Context, repo string) (string, error) {
+		if repo != "x/y" {
+			t.Errorf("token asked for %q", repo)
+		}
+		if !installed.Load() {
+			return "", errors.New("GitHub App 没有安装到仓库 x/y")
+		}
+		return "app-token", nil
+	}
+	reports := make(chan error, 64)
+	r.startSync(func(err error) {
+		select {
+		case reports <- err:
+		default:
+		}
+	}, func([]string) {})
+	next := func(failing bool) {
+		t.Helper()
+		deadline := time.After(30 * time.Second)
+		for {
+			select {
+			case err := <-reports:
+				if (err != nil) == failing {
+					return
+				}
+			case <-deadline:
+				t.Fatalf("no report with failing=%v", failing)
+			}
+		}
+	}
+	next(true)
+	if status, _ := r.Status(t.Context()); !strings.Contains(status.PushError, "没有安装") {
+		t.Errorf("push error = %q, want the token source's reason", status.PushError)
+	}
+	installed.Store(true)
+	r.RequestSync()
+	next(false)
+	if got, want := gitLines(t, origin, "rev-parse", "main")[0], gitLines(t, r.cfg.Workdir, "rev-parse", "HEAD")[0]; got != want {
+		t.Errorf("origin at %s, local HEAD %s", got, want)
 	}
 }
 
@@ -157,7 +244,7 @@ func saveBehindExternalCommit(t *testing.T, externalFile string) (r *Repo, origi
 	mustGit(t, seed, "push", "origin", "main")
 	external = gitLines(t, seed, "rev-parse", "HEAD")[0]
 
-	r = &Repo{cfg: config.Repo{Slug: "t", Workdir: work, ContentDir: "content", Branch: "main"}}
+	r = &Repo{cfg: config.Repo{Github: "t", Workdir: work, ContentDir: "content", Branch: "main"}}
 	savePage(t, r, "mine\n")
 	if got := gitLines(t, origin, "rev-parse", "main")[0]; got != external {
 		t.Fatalf("save pushed synchronously: origin moved to %s", got)

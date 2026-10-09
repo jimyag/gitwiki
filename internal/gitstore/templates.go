@@ -65,8 +65,8 @@ func (r *Repo) Templates(ctx context.Context) (_ []PageTemplate, retErr error) {
 		}
 		doc, _ := ParsePage(data)
 		meta := MetaOf(doc.FrontMatter)
-		// Dates, deprecation, aliases and URLs belong to the original page, not a new one.
-		meta.Date, meta.Deprecated, meta.ReplacedBy = "", false, ""
+		// Dates, reviews, deprecation, aliases and URLs belong to the original page, not a new one.
+		meta.Date, meta.Reviewed, meta.Deprecated, meta.ReplacedBy = "", "", false, ""
 		out = append(out, PageTemplate{ID: name, Title: pageTitle(doc, strings.TrimSuffix(name, ".md")), Description: meta.Description, Body: doc.Body, meta: meta})
 	}
 	return out, nil

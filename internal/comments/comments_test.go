@@ -1,6 +1,7 @@
 package comments
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -8,12 +9,15 @@ import (
 	"testing"
 
 	"github.com/jimyag/gitwiki/internal/auth"
-	"github.com/jimyag/gitwiki/internal/config"
 	"github.com/jimyag/gitwiki/internal/gitstore"
 )
 
 func TestMoveCarriesSavedAndPendingComments(t *testing.T) {
-	dir := t.TempDir()
+	dataDir := t.TempDir()
+	dir := filepath.Join(dataDir, "o", "test") // where the manager keeps wiki o/test
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	git := func(args ...string) {
 		t.Helper()
 		cmd := exec.CommandContext(t.Context(), "git", append([]string{"-C", dir}, args...)...)
@@ -34,10 +38,18 @@ func TestMoveCarriesSavedAndPendingComments(t *testing.T) {
 	}
 	git("add", ".")
 	git("commit", "-m", "initial pages")
-	m := gitstore.NewManager(&config.Config{Repos: []config.Repo{{Slug: "test", Workdir: dir, ContentDir: "content", Branch: "main"}}})
-	r := m.Get("test")
-	s := New(m)
+	m := gitstore.NewManager(dataDir, nil, func(context.Context, string) (auth.RepoInfo, error) {
+		return auth.RepoInfo{FullName: "o/test", Name: "test", DefaultBranch: "main"}, nil
+	})
+	r, err := m.Get(t.Context(), "o/test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New()
 	u := &auth.User{Login: "test", Email: "test@example.com"}
+	if list, err := s.List(r, "a"); err != nil || list == nil || len(list) != 0 {
+		t.Fatalf("comments(a) before any = %#v, %v; want an empty, non-nil list", list, err)
+	}
 	for _, id := range []string{"b", "b/c"} {
 		if _, err := s.Add(r, id, "saved", true, &TextAnchor{Quote: "B"}, u); err != nil {
 			t.Fatal(err)
