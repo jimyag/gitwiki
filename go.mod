@@ -5,9 +5,12 @@ go 1.27
 toolchain go1.27.3
 
 require (
-	github.com/BurntSushi/toml v0.3.1 // indirect
-	github.com/adrg/frontmatter v0.2.0 // indirect
-	github.com/coder/websocket v1.8.15 // indirect
+	github.com/adrg/frontmatter v0.2.0
+	github.com/coder/websocket v1.8.15
+	gopkg.in/yaml.v3 v3.0.1
+)
+
+require (
+	github.com/BurntSushi/toml v0.4.1 // indirect
 	gopkg.in/yaml.v2 v2.3.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
