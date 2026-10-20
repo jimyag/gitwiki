@@ -31,10 +31,10 @@ tasks:
       - go test -race -coverprofile=coverage.txt ./...
 
   check:
-    desc: Typecheck + vet
+    desc: Typecheck + golangci-lint
     cmds:
       - cd web && bun run typecheck
-      - go vet ./...
+      - task: lint
 
   build:
     desc: Build frontend and backend binary

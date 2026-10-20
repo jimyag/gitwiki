@@ -122,7 +122,7 @@ task dev-backend    # go run ./cmd/gitwiki -config config.yaml
 task deps               # 安装前端依赖
 task lint               # golangci-lint
 task test               # go test -race，生成 coverage.txt
-task check              # 前端 typecheck + go vet
+task check              # 前端 typecheck + golangci-lint
 task build              # 构建前端，再嵌入后端二进制
 task release-snapshot   # 本地跑 GoReleaser 快照，验证发布配置
 ```
