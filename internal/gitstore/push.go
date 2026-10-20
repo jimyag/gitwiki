@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -70,12 +71,19 @@ func (m *Manager) StartSync(ctx context.Context, onSync func(slug string, err er
 	}
 }
 
-func (r *Repo) startSync(onSync func(error), onPull func([]string)) {
+// The returned stop function waits for in-flight syncs before callers remove the working copy.
+func (r *Repo) startSync(onSync func(error), onPull func([]string)) func() {
+	ctx, cancel := context.WithCancel(context.Background())
+	var worker sync.WaitGroup
 	r.pushKick = make(chan struct{}, 1)
-	go r.syncLoop(onSync, onPull)
+	worker.Go(func() { r.syncLoop(ctx, onSync, onPull) })
 	// Commits left unpushed by an earlier run (crash, GitHub outage) go out now.
 	if _, err := os.Stat(filepath.Join(r.cfg.Workdir, ".git")); err == nil {
 		r.schedulePush()
+	}
+	return func() {
+		cancel()
+		worker.Wait()
 	}
 }
 
@@ -87,7 +95,7 @@ func (r *Repo) schedulePush() {
 	}
 }
 
-func (r *Repo) syncLoop(onSync func(error), onPull func([]string)) {
+func (r *Repo) syncLoop(ctx context.Context, onSync func(error), onPull func([]string)) {
 	tick := time.Tick(pullInterval)
 	pull := func() {
 		pages, err := r.pullOnce()
@@ -100,8 +108,13 @@ func (r *Repo) syncLoop(onSync func(error), onPull func([]string)) {
 	}
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-r.pushKick:
-			r.pushUntilDone(onSync)
+			r.pushUntilDone(ctx, onSync)
+			if ctx.Err() != nil {
+				return
+			}
 			pull()
 		case <-tick:
 			pull()
@@ -109,8 +122,8 @@ func (r *Repo) syncLoop(onSync func(error), onPull func([]string)) {
 	}
 }
 
-func (r *Repo) pushUntilDone(onSync func(error)) {
-	for attempt := 0; ; attempt++ {
+func (r *Repo) pushUntilDone(ctx context.Context, onSync func(error)) {
+	for attempt := 0; ctx.Err() == nil; attempt++ {
 		err := r.pushOnce()
 		onSync(r.syncErr())
 		if err == nil {
@@ -119,6 +132,8 @@ func (r *Repo) pushUntilDone(onSync func(error)) {
 		log.Printf("push %s (attempt %d): %v", r.cfg.Github, attempt+1, err)
 		// Back off 5s, 10s … up to 5 minutes; a new commit retries right away.
 		select {
+		case <-ctx.Done():
+			return
 		case <-time.After(min(5*time.Second<<min(attempt, 6), 5*time.Minute)):
 		case <-r.pushKick:
 		}

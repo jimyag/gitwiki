@@ -61,12 +61,12 @@ func TestSyncStatus(t *testing.T) {
 func TestSyncLoopReportsPullFailures(t *testing.T) {
 	r, origin, _ := saveBehindExternalCommit(t, "content/b.md")
 	reports := make(chan error, 64)
-	r.startSync(func(err error) {
+	t.Cleanup(r.startSync(func(err error) {
 		select {
 		case reports <- err:
 		default:
 		}
-	}, func([]string) {})
+	}, func([]string) {}))
 	next := func(failing bool) {
 		t.Helper()
 		deadline := time.After(30 * time.Second)
@@ -110,12 +110,12 @@ func TestSyncUsesAppToken(t *testing.T) {
 		return "app-token", nil
 	}
 	reports := make(chan error, 64)
-	r.startSync(func(err error) {
+	t.Cleanup(r.startSync(func(err error) {
 		select {
 		case reports <- err:
 		default:
 		}
-	}, func([]string) {})
+	}, func([]string) {}))
 	next := func(failing bool) {
 		t.Helper()
 		deadline := time.After(30 * time.Second)
@@ -139,6 +139,38 @@ func TestSyncUsesAppToken(t *testing.T) {
 	next(false)
 	if got, want := gitLines(t, origin, "rev-parse", "main")[0], gitLines(t, r.cfg.Workdir, "rev-parse", "HEAD")[0]; got != want {
 		t.Errorf("origin at %s, local HEAD %s", got, want)
+	}
+}
+
+func TestStopSyncDuringRetry(t *testing.T) {
+	work := t.TempDir()
+	mustGit(t, work, "init", "-b", "main")
+	r := &Repo{cfg: config.Repo{Workdir: work, Branch: "main"}}
+	reports := make(chan error, 1)
+	stop := r.startSync(func(err error) {
+		select {
+		case reports <- err:
+		default:
+		}
+	}, func([]string) {})
+	t.Cleanup(stop)
+	select {
+	case err := <-reports:
+		if err == nil {
+			t.Fatal("push to an unconfigured origin succeeded")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("push loop never reported")
+	}
+	stopped := make(chan struct{})
+	go func() {
+		stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stop did not interrupt the push retry backoff")
 	}
 }
 
@@ -267,12 +299,13 @@ func savePage(t *testing.T, r *Repo, body string) {
 func waitSync(t *testing.T, r *Repo) error {
 	t.Helper()
 	synced := make(chan error, 1)
-	r.startSync(func(err error) {
+	stop := r.startSync(func(err error) {
 		select {
 		case synced <- err:
 		default: // later retries are not part of the test
 		}
 	}, func([]string) {})
+	defer stop()
 	select {
 	case err := <-synced:
 		return err
