@@ -20,7 +20,7 @@
     "@codemirror/view": "^6.36.4",
     "@lezer/highlight": "^1.2.5",
     "codemirror": "^6.0.1",
-    "cropperjs": "1.6.3",
+    "cropperjs": "1.7.0",
     "katex": "^0.18.10",
     "lucide-react": "^0.469.0",
     "md-editor-rt": "7.1.0",

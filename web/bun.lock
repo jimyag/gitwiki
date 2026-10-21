@@ -14,7 +14,7 @@
         "@codemirror/view": "^6.36.4",
         "@lezer/highlight": "^1.2.5",
         "codemirror": "^6.0.1",
-        "cropperjs": "1.6.3",
+        "cropperjs": "1.7.0",
         "katex": "^0.18.10",
         "lucide-react": "^0.469.0",
         "md-editor-rt": "7.1.0",
@@ -518,7 +518,7 @@
 
     "crelt": ["crelt@1.0.7", "", {}, "sha512-aK6BbWfhf4U/wCcLHKPJl/xa6VkVstRaPywWtMKGwuOLc/wZTyQYuoxgvZnNsBvv7Kg3YTBQYYBCggcviQczuA=="],
 
-    "cropperjs": ["cropperjs@1.6.3", "", {}, "sha512-BRb0PRIzjbfM5n+i6L2D85pSbXI/w6cnnwb9W9cRKgAmbiP+OjDeq+Irhd86IujZDXm/7JWECfscllFIdrlmfw=="],
+    "cropperjs": ["cropperjs@1.7.0", "", {}, "sha512-AkGnZxr7xAJBa63ObXq5ZKLkh9c8wisC+Ym8VzIDn3KZ+6qRTbBnOl2w2dFOTMzLP5IcfOpEK9PICDywNXhncg=="],
 
     "cssfilter": ["cssfilter@0.0.10", "", {}, "sha512-FAaLDaplstoRsDR8XGYH51znUN0UY7nMc6Z9/fvE8EXGwvJE9hu7W2vHwx1+bd6gCYnln9nLbzxFTrcO9YQDZw=="],
 
