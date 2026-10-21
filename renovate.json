@@ -5,6 +5,12 @@
   ],
   "packageRules": [
     {
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["vite", "@vitejs/plugin-react"],
+      "groupName": "Vite",
+      "separateMajorMinor": false
+    },
+    {
       "matchManagers": [
         "gomod"
       ],
