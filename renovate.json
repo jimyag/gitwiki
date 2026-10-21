@@ -39,6 +39,12 @@
         "go"
       ],
       "enabled": true
+    },
+    {
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["gopkg.in/yaml.v2"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
     }
   ]
 }
